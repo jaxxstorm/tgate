@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"tailscale.com/client/local"
@@ -25,8 +28,11 @@ import (
 	"tailscale.com/tsnet"
 )
 
+// Version will be set by goreleaser
+var Version = "dev"
+
 var CLI struct {
-	Port          int    `kong:"arg,required,help='Local port to expose'"`
+	Port          int    `kong:"arg,optional,help='Local port to expose'"`
 	TailscaleName string `kong:"short='n',default='tgate',help='Tailscale node name (only used with tsnet mode)'"`
 	Funnel        bool   `kong:"short='f',help='Enable Tailscale funnel (public internet access)'"`
 	Verbose       bool   `kong:"short='v',help='Enable verbose logging'"`
@@ -38,6 +44,8 @@ var CLI struct {
 	SetPath       string `kong:"help='Set custom path for serve (default: /)'"`
 	ServePort     int    `kong:"help='Tailscale serve port (default: 80 for HTTP, 443 for HTTPS)'"`
 	UseHTTPS      bool   `kong:"help='Use HTTPS instead of HTTP for Tailscale serve'"`
+	NoTUI         bool   `kong:"help='Disable TUI and use simple console output'"`
+	Version       bool   `kong:"help='Show version information'"`
 }
 
 type RequestLog struct {
@@ -92,6 +100,17 @@ func (lrw *LoggingResponseWriter) captureHeaders() {
 	}
 }
 
+// TUI Message types
+type logMsg struct {
+	level   string
+	message string
+	time    time.Time
+}
+
+type requestMsg struct {
+	log RequestLog
+}
+
 type TGateServer struct {
 	logger      *zap.Logger
 	sugarLogger *zap.SugaredLogger
@@ -99,9 +118,11 @@ type TGateServer struct {
 	targetURL   *url.URL
 	requestLog  []RequestLog
 	logMutex    sync.RWMutex
+	program     *tea.Program
+	useTUI      bool
 }
 
-func NewTGateServer(logger *zap.Logger, targetPort int) *TGateServer {
+func NewTGateServer(logger *zap.Logger, targetPort int, useTUI bool) *TGateServer {
 	targetURL := &url.URL{
 		Scheme: "http",
 		Host:   fmt.Sprintf("localhost:%d", targetPort),
@@ -123,7 +144,12 @@ func NewTGateServer(logger *zap.Logger, targetPort int) *TGateServer {
 		proxy:       proxy,
 		targetURL:   targetURL,
 		requestLog:  make([]RequestLog, 0),
+		useTUI:      useTUI,
 	}
+}
+
+func (s *TGateServer) SetProgram(p *tea.Program) {
+	s.program = p
 }
 
 func (s *TGateServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -161,8 +187,10 @@ func (s *TGateServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"content_length", r.ContentLength,
 	)
 
-	// Print request details to console
-	s.printRequestDetails(r, reqHeaders, bodyString)
+	if !s.useTUI {
+		// Print request details to console (legacy mode)
+		s.printRequestDetails(r, reqHeaders, bodyString)
+	}
 
 	// Serve the request
 	s.proxy.ServeHTTP(lrw, r)
@@ -207,8 +235,13 @@ func (s *TGateServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"duration", duration,
 	)
 
-	// Print response summary
-	s.printResponseSummary(lrw.statusCode, lrw.size, duration)
+	if !s.useTUI {
+		// Print response summary (legacy mode)
+		s.printResponseSummary(lrw.statusCode, lrw.size, duration)
+	} else if s.program != nil {
+		// Send to TUI
+		s.program.Send(requestMsg{log: logEntry})
+	}
 }
 
 func (s *TGateServer) printRequestDetails(r *http.Request, headers map[string]string, body string) {
@@ -275,7 +308,258 @@ func (s *TGateServer) GetRequestLogs() []RequestLog {
 	return logs
 }
 
-func setupLogger(verbose bool, jsonFormat bool, logFile string) (*zap.Logger, error) {
+// TUI Model
+type model struct {
+	appLogs     viewport.Model
+	requestPane viewport.Model
+	width       int
+	height      int
+	appLogLines []string
+	lastRequest *RequestLog
+	ready       bool
+}
+
+func initialModel() model {
+	return model{
+		appLogs:     viewport.New(0, 0),
+		requestPane: viewport.New(0, 0),
+		appLogLines: []string{},
+	}
+}
+
+func (m model) Init() tea.Cmd {
+	return nil
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		if !m.ready {
+			// Calculate pane sizes
+			paneWidth := msg.Width / 2
+			paneHeight := msg.Height - 4 // Leave space for borders and title
+
+			m.appLogs = viewport.New(paneWidth-2, paneHeight)
+			m.requestPane = viewport.New(paneWidth-2, paneHeight)
+			m.width = msg.Width
+			m.height = msg.Height
+			m.ready = true
+
+			// Set initial content
+			m.appLogs.SetContent(strings.Join(m.appLogLines, "\n"))
+		} else {
+			// Update existing viewports
+			paneWidth := msg.Width / 2
+			paneHeight := msg.Height - 4
+
+			m.appLogs.Width = paneWidth - 2
+			m.appLogs.Height = paneHeight
+			m.requestPane.Width = paneWidth - 2
+			m.requestPane.Height = paneHeight
+			m.width = msg.Width
+			m.height = msg.Height
+		}
+
+	case logMsg:
+		// Add to app logs
+		timestamp := msg.time.Format("15:04:05")
+		levelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+		if msg.level == "ERROR" {
+			levelStyle = levelStyle.Foreground(lipgloss.Color("196"))
+		} else if msg.level == "WARN" {
+			levelStyle = levelStyle.Foreground(lipgloss.Color("208"))
+		} else if msg.level == "INFO" {
+			levelStyle = levelStyle.Foreground(lipgloss.Color("34"))
+		}
+
+		logLine := fmt.Sprintf("%s %s %s", 
+			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(timestamp),
+			levelStyle.Render(msg.level),
+			msg.message)
+		
+		m.appLogLines = append(m.appLogLines, logLine)
+		
+		// Keep only last 1000 lines
+		if len(m.appLogLines) > 1000 {
+			m.appLogLines = m.appLogLines[1:]
+		}
+		
+		if m.ready {
+			m.appLogs.SetContent(strings.Join(m.appLogLines, "\n"))
+			m.appLogs.GotoBottom()
+		}
+
+	case requestMsg:
+		// Update request pane
+		m.lastRequest = &msg.log
+		if m.ready {
+			content := m.formatRequest(msg.log)
+			m.requestPane.SetContent(content)
+			m.requestPane.GotoTop()
+		}
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		}
+	}
+
+	// Update viewports
+	if m.ready {
+		m.appLogs, _ = m.appLogs.Update(msg)
+		m.requestPane, _ = m.requestPane.Update(msg)
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) formatRequest(req RequestLog) string {
+	var b strings.Builder
+	
+	// Request line
+	statusColor := lipgloss.Color("34") // green
+	if req.Response.StatusCode >= 400 {
+		statusColor = lipgloss.Color("196") // red
+	} else if req.Response.StatusCode >= 300 {
+		statusColor = lipgloss.Color("208") // orange
+	}
+
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("%s %s", req.Method, req.URL)))
+	b.WriteString("\n")
+	
+	// Status and timing
+	b.WriteString(fmt.Sprintf("Status: %s  Duration: %s  Size: %d bytes\n",
+		lipgloss.NewStyle().Foreground(statusColor).Render(fmt.Sprintf("%d", req.Response.StatusCode)),
+		req.Duration.Round(time.Millisecond).String(),
+		req.Response.Size))
+	
+	b.WriteString(fmt.Sprintf("From: %s  Time: %s\n", 
+		req.RemoteAddr, 
+		req.Timestamp.Format("15:04:05")))
+	
+	b.WriteString("\n")
+	
+	// Request Headers
+	if len(req.Headers) > 0 {
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Request Headers:"))
+		b.WriteString("\n")
+		
+		var sortedHeaders []string
+		for k := range req.Headers {
+			sortedHeaders = append(sortedHeaders, k)
+		}
+		sort.Strings(sortedHeaders)
+		
+		for _, k := range sortedHeaders {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", 
+				lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(k),
+				req.Headers[k]))
+		}
+		b.WriteString("\n")
+	}
+	
+	// Response Headers
+	if len(req.Response.Headers) > 0 {
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Response Headers:"))
+		b.WriteString("\n")
+		
+		var sortedHeaders []string
+		for k := range req.Response.Headers {
+			sortedHeaders = append(sortedHeaders, k)
+		}
+		sort.Strings(sortedHeaders)
+		
+		for _, k := range sortedHeaders {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", 
+				lipgloss.NewStyle().Foreground(lipgloss.Color("211")).Render(k),
+				req.Response.Headers[k]))
+		}
+		b.WriteString("\n")
+	}
+	
+	// Request Body
+	if req.Body != "" {
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Request Body:"))
+		b.WriteString("\n")
+		if len(req.Body) > 1000 {
+			b.WriteString(fmt.Sprintf("[%d bytes - truncated]\n", len(req.Body)))
+			b.WriteString(req.Body[:1000])
+			b.WriteString("\n...")
+		} else {
+			b.WriteString(req.Body)
+		}
+		b.WriteString("\n")
+	}
+	
+	return b.String()
+}
+
+func (m model) View() string {
+	if !m.ready {
+		return "Initializing..."
+	}
+
+	// Styles
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("212")).
+		Padding(0, 1)
+
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
+
+	// Create the two panes
+	leftPane := lipgloss.JoinVertical(lipgloss.Top,
+		titleStyle.Render("📋 Application Logs"),
+		borderStyle.Width(m.appLogs.Width).Height(m.appLogs.Height).Render(m.appLogs.View()),
+	)
+
+	rightPane := lipgloss.JoinVertical(lipgloss.Top,
+		titleStyle.Render("🌐 Latest Request"),
+		borderStyle.Width(m.requestPane.Width).Height(m.requestPane.Height).Render(m.requestPane.View()),
+	)
+
+	// Join horizontally
+	main := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+
+	// Add footer
+	footer := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Render("Press 'q' or Ctrl+C to quit")
+
+	return lipgloss.JoinVertical(lipgloss.Top, main, footer)
+}
+
+// Custom log writer for TUI
+type tuiLogWriter struct {
+	program *tea.Program
+}
+
+func (w *tuiLogWriter) Write(p []byte) (n int, err error) {
+	// Parse log level and message from zap output
+	line := string(p)
+	parts := strings.SplitN(line, "\t", 4)
+	if len(parts) >= 3 {
+		level := strings.TrimSpace(parts[1])
+		message := strings.TrimSpace(parts[2])
+		if len(parts) > 3 {
+			message += " " + strings.TrimSpace(parts[3])
+		}
+		
+		w.program.Send(logMsg{
+			level:   level,
+			message: message,
+			time:    time.Now(),
+		})
+	}
+	return len(p), nil
+}
+
+func setupLogger(verbose bool, jsonFormat bool, logFile string, tuiWriter *tuiLogWriter) (*zap.Logger, error) {
 	var config zap.Config
 
 	if jsonFormat {
@@ -295,7 +579,22 @@ func setupLogger(verbose bool, jsonFormat bool, logFile string) (*zap.Logger, er
 		config.OutputPaths = []string{logFile, "stdout"}
 	}
 
-	return config.Build()
+	logger, err := config.Build()
+	if err != nil {
+		return nil, err
+	}
+
+	// If we have a TUI writer, redirect logs to it
+	if tuiWriter != nil {
+		core := zapcore.NewCore(
+			zapcore.NewConsoleEncoder(config.EncoderConfig),
+			zapcore.AddSync(tuiWriter),
+			config.Level,
+		)
+		logger = zap.New(core)
+	}
+
+	return logger, nil
 }
 
 func enableHTTPSFeature(ctx context.Context, lc *local.Client, sugar *zap.SugaredLogger) error {
@@ -567,8 +866,27 @@ func cleanupTailscaleServe(ctx context.Context, lc *local.Client, port int, moun
 func main() {
 	kong.Parse(&CLI)
 
-	// Setup logger
-	logger, err := setupLogger(CLI.Verbose, CLI.JSON, CLI.LogFile)
+	// Handle version flag
+	if CLI.Version {
+		fmt.Printf("tgate version %s\n", Version)
+		os.Exit(0)
+	}
+
+	// Validate that port is provided when not showing version
+	if CLI.Port == 0 {
+		fmt.Fprintf(os.Stderr, "Error: port argument is required\n")
+		fmt.Fprintf(os.Stderr, "Usage: tgate <port> [flags]\n")
+		fmt.Fprintf(os.Stderr, "       tgate --version\n")
+		os.Exit(1)
+	}
+
+	// If funnel is enabled, automatically enable HTTPS since funnel requires it
+	if CLI.Funnel {
+		CLI.UseHTTPS = true
+	}
+
+	// Setup basic logger first (before TUI)
+	logger, err := setupLogger(CLI.Verbose, CLI.JSON, CLI.LogFile, nil)
 	if err != nil {
 		fmt.Printf("Failed to setup logger: %v\n", err)
 		os.Exit(1)
@@ -577,9 +895,7 @@ func main() {
 
 	sugar := logger.Sugar()
 
-	// If funnel is enabled, automatically enable HTTPS since funnel requires it
 	if CLI.Funnel {
-		CLI.UseHTTPS = true
 		sugar.Infof("🌍 Funnel enabled - automatically enabling HTTPS")
 	}
 
@@ -625,10 +941,11 @@ func main() {
 	}
 
 	var cleanup func() error
+	var tgateServer *TGateServer
 
 	if useLocalTailscale {
 		// Create our logging proxy server
-		tgateServer := NewTGateServer(logger, CLI.Port)
+		tgateServer = NewTGateServer(logger, CLI.Port, !CLI.NoTUI)
 		
 		// Find an available port for our local logging proxy
 		proxyPort, err := findAvailablePort(CLI.Port + 1000)
@@ -674,7 +991,7 @@ func main() {
 		sugar.Infof("🔍 All requests will be logged and forwarded to localhost:%d", CLI.Port)
 	} else {
 		// Use tsnet mode
-		tgateServer := NewTGateServer(logger, CLI.Port)
+		tgateServer = NewTGateServer(logger, CLI.Port, !CLI.NoTUI)
 		
 		httpServer := &http.Server{
 			Handler: tgateServer,
@@ -723,23 +1040,63 @@ func main() {
 		}()
 	}
 
-	// Display running information
-	fmt.Printf("\n" + strings.Repeat("─", 60) + "\n")
-	if useLocalTailscale {
-		fmt.Printf("  tgate is running with Tailscale serve!\n")
-		fmt.Printf("  Mode: Local Tailscale daemon\n")
-	} else {
-		fmt.Printf("  tgate is running with tsnet!\n")
-		fmt.Printf("  Mode: tsnet device (%s)\n", CLI.TailscaleName)
-	}
-	fmt.Printf("  Target: localhost:%d\n", CLI.Port)
-	if CLI.WebUI {
-		fmt.Printf("  Web UI: Planned feature\n")
-	}
-	fmt.Printf(strings.Repeat("─", 60) + "\n\n")
+	if CLI.NoTUI {
+		// Display running information (legacy mode)
+		fmt.Printf("\n" + strings.Repeat("─", 60) + "\n")
+		if useLocalTailscale {
+			fmt.Printf("  tgate is running with Tailscale serve!\n")
+			fmt.Printf("  Mode: Local Tailscale daemon\n")
+		} else {
+			fmt.Printf("  tgate is running with tsnet!\n")
+			fmt.Printf("  Mode: tsnet device (%s)\n", CLI.TailscaleName)
+		}
+		fmt.Printf("  Target: localhost:%d\n", CLI.Port)
+		if CLI.WebUI {
+			fmt.Printf("  Web UI: Planned feature\n")
+		}
+		fmt.Printf(strings.Repeat("─", 60) + "\n\n")
 
-	// Wait for shutdown signal
-	<-ctx.Done()
+		// Wait for shutdown signal
+		<-ctx.Done()
+	} else {
+		// Initialize TUI after everything is set up
+		sugar.Infof("🎨 Starting TUI interface...")
+		sugar.Infof("💡 Press 'q' or Ctrl+C to quit")
+		
+		// Create TUI program
+		program := tea.NewProgram(initialModel(), tea.WithAltScreen())
+		
+		// Set up TUI logger
+		tuiWriter := &tuiLogWriter{program: program}
+		tuiLogger, err := setupLogger(CLI.Verbose, CLI.JSON, CLI.LogFile, tuiWriter)
+		if err != nil {
+			sugar.Errorf("Failed to setup TUI logger: %v", err)
+		} else {
+			// Connect the server to the TUI
+			tgateServer.SetProgram(program)
+			// Update logger to use TUI
+			tgateServer.logger = tuiLogger
+			tgateServer.sugarLogger = tuiLogger.Sugar()
+		}
+		
+		// Run TUI in a goroutine and wait for shutdown
+		tuiDone := make(chan struct{})
+		go func() {
+			defer close(tuiDone)
+			if _, err := program.Run(); err != nil {
+				fmt.Printf("TUI error: %v\n", err)
+			}
+		}()
+
+		// Wait for shutdown signal or TUI exit
+		select {
+		case <-ctx.Done():
+			program.Quit()
+		case <-tuiDone:
+			cancel()
+		}
+	}
+
 	sugar.Infof("Shutting down tgate server...")
 
 	if cleanup != nil {

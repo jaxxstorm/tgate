@@ -1,0 +1,46 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tgate
+    goos:
+      - darwin
+      - windows
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - "-X main.Version={{.Version}}"
+
+archives:
+  - id: tgate
+    format: tar.gz
+    builds:
+      - tgate
+    name_template: "{{ .Binary }}-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: tgate
+    repository:
+      owner: jaxxstorm
+      name: homebrew-tap
+    commit_author:
+      name: GitHub Actions
+      email: bot@leebriggs.co.uk
+    directory: Formula
+    homepage: "https://leebriggs.co.uk"
+    description: "A logging and monitoring proxy based on Tailscale server and funnel."
