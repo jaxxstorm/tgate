@@ -577,9 +577,16 @@ func main() {
 
 	sugar := logger.Sugar()
 
+	// If funnel is enabled, automatically enable HTTPS since funnel requires it
+	if CLI.Funnel {
+		CLI.UseHTTPS = true
+		sugar.Infof("🌍 Funnel enabled - automatically enabling HTTPS")
+	}
+
 	sugar.Infof("Starting tgate server...")
 	sugar.Infof("Local target: localhost:%d", CLI.Port)
 	sugar.Infof("Funnel enabled: %t", CLI.Funnel)
+	sugar.Infof("HTTPS enabled: %t", CLI.UseHTTPS)
 
 	// Test local connection
 	testConn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", CLI.Port), 5*time.Second)
