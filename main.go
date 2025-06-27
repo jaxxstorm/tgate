@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -37,7 +38,6 @@ var CLI struct {
 	Funnel        bool   `kong:"short='f',help='Enable Tailscale funnel (public internet access)'"`
 	Verbose       bool   `kong:"short='v',help='Enable verbose logging'"`
 	JSON          bool   `kong:"short='j',help='Output logs in JSON format'"`
-	WebUI         bool   `kong:"short='w',help='Enable web UI (future feature)'"`
 	LogFile       string `kong:"help='Log file path (optional)'"`
 	AuthKey       string `kong:"help='Tailscale auth key to create separate tsnet device'"`
 	ForceTsnet    bool   `kong:"help='Force tsnet mode even if local Tailscale is available'"`
@@ -46,6 +46,7 @@ var CLI struct {
 	UseHTTPS      bool   `kong:"help='Use HTTPS instead of HTTP for Tailscale serve'"`
 	NoTUI         bool   `kong:"help='Disable TUI and use simple console output'"`
 	Version       bool   `kong:"help='Show version information'"`
+	Mock          bool   `kong:"short='m',help='Enable mock/testing mode (no backing server required, enables funnel by default)'"`
 }
 
 type RequestLog struct {
@@ -120,22 +121,28 @@ type TGateServer struct {
 	logMutex    sync.RWMutex
 	program     *tea.Program
 	useTUI      bool
+	mockMode    bool
 }
 
-func NewTGateServer(logger *zap.Logger, targetPort int, useTUI bool) *TGateServer {
-	targetURL := &url.URL{
-		Scheme: "http",
-		Host:   fmt.Sprintf("localhost:%d", targetPort),
-	}
+func NewTGateServer(logger *zap.Logger, targetPort int, useTUI bool, mockMode bool) *TGateServer {
+	var targetURL *url.URL
+	var proxy *httputil.ReverseProxy
+	
+	if !mockMode {
+		targetURL = &url.URL{
+			Scheme: "http",
+			Host:   fmt.Sprintf("localhost:%d", targetPort),
+		}
 
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+		proxy = httputil.NewSingleHostReverseProxy(targetURL)
 
-	// Customize the director to preserve original headers
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Header.Set("X-Forwarded-Proto", "https")
-		req.Header.Set("X-Forwarded-Host", req.Host)
+		// Customize the director to preserve original headers
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			req.Header.Set("X-Forwarded-Host", req.Host)
+		}
 	}
 
 	return &TGateServer{
@@ -145,6 +152,7 @@ func NewTGateServer(logger *zap.Logger, targetPort int, useTUI bool) *TGateServe
 		targetURL:   targetURL,
 		requestLog:  make([]RequestLog, 0),
 		useTUI:      useTUI,
+		mockMode:    mockMode,
 	}
 }
 
@@ -192,8 +200,13 @@ func (s *TGateServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.printRequestDetails(r, reqHeaders, bodyString)
 	}
 
-	// Serve the request
-	s.proxy.ServeHTTP(lrw, r)
+	if s.mockMode {
+		// Mock mode: Just return a successful response
+		s.handleMockRequest(lrw, r, bodyString)
+	} else {
+		// Proxy mode: Forward to backing server
+		s.proxy.ServeHTTP(lrw, r)
+	}
 
 	// Capture response headers after serving
 	lrw.captureHeaders()
@@ -244,6 +257,37 @@ func (s *TGateServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *TGateServer) handleMockRequest(w http.ResponseWriter, r *http.Request, body string) {
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-TGate-Mode", "mock")
+	w.Header().Set("X-TGate-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	
+	// Create a simple response
+	response := map[string]interface{}{
+		"status":    "received",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"method":    r.Method,
+		"path":      r.URL.Path,
+		"headers":   len(r.Header),
+		"body_size": len(body),
+	}
+	
+	// Add query parameters if present
+	if len(r.URL.RawQuery) > 0 {
+		response["query"] = r.URL.RawQuery
+	}
+	
+	// Add content type if present
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		response["content_type"] = contentType
+	}
+	
+	// Return 200 OK with JSON response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 func (s *TGateServer) printRequestDetails(r *http.Request, headers map[string]string, body string) {
 	fmt.Printf("\n╭─ %s %s\n", r.Method, r.URL.String())
 	fmt.Printf("├─ From: %s\n", r.RemoteAddr)
@@ -282,7 +326,14 @@ func (s *TGateServer) printRequestDetails(r *http.Request, headers map[string]st
 		fmt.Printf("├─ Body: [%d bytes - too large to display]\n", len(body))
 	}
 
-	fmt.Printf("╰─ Proxying to %s\n", s.targetURL.String())
+	fmt.Printf("╰─ Proxying to %s\n", s.getTargetDescription())
+}
+
+func (s *TGateServer) getTargetDescription() string {
+	if s.mockMode {
+		return "mock testing mode (no backing server)"
+	}
+	return s.targetURL.String()
 }
 
 func (s *TGateServer) printResponseSummary(statusCode int, size int64, duration time.Duration) {
@@ -872,12 +923,27 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Validate that port is provided when not showing version
-	if CLI.Port == 0 {
-		fmt.Fprintf(os.Stderr, "Error: port argument is required\n")
-		fmt.Fprintf(os.Stderr, "Usage: tgate <port> [flags]\n")
+	// Validate arguments
+	if CLI.Mock && CLI.Port != 0 {
+		fmt.Fprintf(os.Stderr, "Error: Cannot specify both port and --mock flag\n")
+		fmt.Fprintf(os.Stderr, "Usage: tgate <port> [flags]     (proxy mode)\n")
+		fmt.Fprintf(os.Stderr, "       tgate --mock [flags]     (mock/testing mode)\n")
 		fmt.Fprintf(os.Stderr, "       tgate --version\n")
 		os.Exit(1)
+	}
+
+	if !CLI.Mock && CLI.Port == 0 {
+		fmt.Fprintf(os.Stderr, "Error: port argument is required (or use --mock for testing mode)\n")
+		fmt.Fprintf(os.Stderr, "Usage: tgate <port> [flags]     (proxy mode)\n")
+		fmt.Fprintf(os.Stderr, "       tgate --mock [flags]     (mock/testing mode)\n")
+		fmt.Fprintf(os.Stderr, "       tgate --version\n")
+		os.Exit(1)
+	}
+
+	// Auto-enable funnel for mock mode unless explicitly disabled
+	if CLI.Mock && !CLI.Funnel {
+		CLI.Funnel = true
+		CLI.UseHTTPS = true
 	}
 
 	// If funnel is enabled, automatically enable HTTPS since funnel requires it
@@ -895,22 +961,32 @@ func main() {
 
 	sugar := logger.Sugar()
 
+	if CLI.Mock {
+		sugar.Infof("🎭 Mock mode enabled - automatically enabling funnel for external access")
+	}
+
 	if CLI.Funnel {
 		sugar.Infof("🌍 Funnel enabled - automatically enabling HTTPS")
 	}
 
 	sugar.Infof("Starting tgate server...")
-	sugar.Infof("Local target: localhost:%d", CLI.Port)
+	if CLI.Mock {
+		sugar.Infof("Mode: Mock/testing (no backing server)")
+	} else {
+		sugar.Infof("Local target: localhost:%d", CLI.Port)
+	}
 	sugar.Infof("Funnel enabled: %t", CLI.Funnel)
 	sugar.Infof("HTTPS enabled: %t", CLI.UseHTTPS)
 
-	// Test local connection
-	testConn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", CLI.Port), 5*time.Second)
-	if err != nil {
-		sugar.Fatalf("Cannot connect to local server at localhost:%d - %v", CLI.Port, err)
+	// Test local connection only in proxy mode
+	if !CLI.Mock {
+		testConn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", CLI.Port), 5*time.Second)
+		if err != nil {
+			sugar.Fatalf("Cannot connect to local server at localhost:%d - %v", CLI.Port, err)
+		}
+		testConn.Close()
+		sugar.Infof("✓ Local server is reachable")
 	}
-	testConn.Close()
-	sugar.Infof("✓ Local server is reachable")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -945,53 +1021,99 @@ func main() {
 
 	if useLocalTailscale {
 		// Create our logging proxy server
-		tgateServer = NewTGateServer(logger, CLI.Port, !CLI.NoTUI)
+		tgateServer = NewTGateServer(logger, CLI.Port, !CLI.NoTUI, CLI.Mock)
 		
-		// Find an available port for our local logging proxy
-		proxyPort, err := findAvailablePort(CLI.Port + 1000)
-		if err != nil {
-			sugar.Fatalf("Failed to find available port for logging proxy: %v", err)
-		}
-		
-		sugar.Infof("Starting local logging proxy on port %d", proxyPort)
-		
-		// Start our logging proxy server
-		proxyServer := &http.Server{
-			Addr:    fmt.Sprintf("localhost:%d", proxyPort),
-			Handler: tgateServer,
-		}
-		
-		go func() {
-			if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				sugar.Errorf("Logging proxy server error: %v", err)
+		if CLI.Mock {
+			// In mock mode, serve directly without proxy
+			// Find an available port for our mock server
+			proxyPort, err := findAvailablePort(8080)
+			if err != nil {
+				sugar.Fatalf("Failed to find available port for mock server: %v", err)
 			}
-		}()
-		
-		// Give the proxy server a moment to start
-		time.Sleep(100 * time.Millisecond)
-		
-		// Use local Tailscale serve (pointing to our logging proxy)
-		sugar.Infof("Setting up Tailscale serve...")
-		
-		err = setupTailscaleServe(ctx, localClient, proxyPort, CLI.SetPath, CLI.Funnel, CLI.UseHTTPS, CLI.ServePort, sugar)
-		if err != nil {
-			sugar.Fatalf("Failed to setup Tailscale serve: %v", err)
-		}
+			
+			sugar.Infof("Starting mock testing server on port %d", proxyPort)
+			
+			// Start our mock server
+			proxyServer := &http.Server{
+				Addr:    fmt.Sprintf("localhost:%d", proxyPort),
+				Handler: tgateServer,
+			}
+			
+			go func() {
+				if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					sugar.Errorf("Mock server error: %v", err)
+				}
+			}()
+			
+			// Give the server a moment to start
+			time.Sleep(100 * time.Millisecond)
+			
+			// Use local Tailscale serve (pointing to our mock server)
+			sugar.Infof("Setting up Tailscale serve...")
+			
+			err = setupTailscaleServe(ctx, localClient, proxyPort, CLI.SetPath, CLI.Funnel, CLI.UseHTTPS, CLI.ServePort, sugar)
+			if err != nil {
+				sugar.Fatalf("Failed to setup Tailscale serve: %v", err)
+			}
 
-		cleanup = func() error {
-			// Cleanup Tailscale serve config
-			cleanupTailscaleServe(context.Background(), localClient, CLI.Port, CLI.SetPath, CLI.UseHTTPS, CLI.ServePort, sugar)
-			// Shutdown proxy server
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			return proxyServer.Shutdown(shutdownCtx)
-		}
+			cleanup = func() error {
+				// Cleanup Tailscale serve config
+				cleanupTailscaleServe(context.Background(), localClient, 0, CLI.SetPath, CLI.UseHTTPS, CLI.ServePort, sugar)
+				// Shutdown mock server
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return proxyServer.Shutdown(shutdownCtx)
+			}
 
-		sugar.Infof("🚀 tgate server configured with Tailscale serve + logging proxy")
-		sugar.Infof("🔍 All requests will be logged and forwarded to localhost:%d", CLI.Port)
+			sugar.Infof("🚀 tgate mock server configured with Tailscale serve")
+			sugar.Infof("🔗 All requests will be logged and acknowledged")
+		} else {
+			// Find an available port for our local logging proxy
+			proxyPort, err := findAvailablePort(CLI.Port + 1000)
+			if err != nil {
+				sugar.Fatalf("Failed to find available port for logging proxy: %v", err)
+			}
+			
+			sugar.Infof("Starting local logging proxy on port %d", proxyPort)
+			
+			// Start our logging proxy server
+			proxyServer := &http.Server{
+				Addr:    fmt.Sprintf("localhost:%d", proxyPort),
+				Handler: tgateServer,
+			}
+			
+			go func() {
+				if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					sugar.Errorf("Logging proxy server error: %v", err)
+				}
+			}()
+			
+			// Give the proxy server a moment to start
+			time.Sleep(100 * time.Millisecond)
+			
+			// Use local Tailscale serve (pointing to our logging proxy)
+			sugar.Infof("Setting up Tailscale serve...")
+			
+			err = setupTailscaleServe(ctx, localClient, proxyPort, CLI.SetPath, CLI.Funnel, CLI.UseHTTPS, CLI.ServePort, sugar)
+			if err != nil {
+				sugar.Fatalf("Failed to setup Tailscale serve: %v", err)
+			}
+
+			cleanup = func() error {
+				// Cleanup Tailscale serve config
+				cleanupTailscaleServe(context.Background(), localClient, CLI.Port, CLI.SetPath, CLI.UseHTTPS, CLI.ServePort, sugar)
+				// Shutdown proxy server
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return proxyServer.Shutdown(shutdownCtx)
+			}
+
+			sugar.Infof("🚀 tgate server configured with Tailscale serve + logging proxy")
+			sugar.Infof("🔍 All requests will be logged and forwarded to localhost:%d", CLI.Port)
+		}
 	} else {
 		// Use tsnet mode
-		tgateServer = NewTGateServer(logger, CLI.Port, !CLI.NoTUI)
+		tgateServer = NewTGateServer(logger, CLI.Port, !CLI.NoTUI, CLI.Mock)
 		
 		httpServer := &http.Server{
 			Handler: tgateServer,
@@ -1050,9 +1172,10 @@ func main() {
 			fmt.Printf("  tgate is running with tsnet!\n")
 			fmt.Printf("  Mode: tsnet device (%s)\n", CLI.TailscaleName)
 		}
-		fmt.Printf("  Target: localhost:%d\n", CLI.Port)
-		if CLI.WebUI {
-			fmt.Printf("  Web UI: Planned feature\n")
+		if CLI.Mock {
+			fmt.Printf("  Mode: Mock/Public\n")
+		} else {
+			fmt.Printf("  Target: localhost:%d\n", CLI.Port)
 		}
 		fmt.Printf(strings.Repeat("─", 60) + "\n\n")
 
