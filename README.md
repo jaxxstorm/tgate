@@ -15,6 +15,8 @@ TGate combines the power of Tailscale's secure networking with an elegant termin
 - ⚡ **Dual Mode** - Works with local Tailscale daemon or as a standalone tsnet device
 - 🛠 **Developer Friendly** - Perfect for debugging webhooks, APIs, and local development
 
+[![asciicast](https://asciinema.org/a/tkCwpf6CbahDsqMT30q7NwoU2.svg)](https://asciinema.org/a/tkCwpf6CbahDsqMT30q7NwoU2)
+
 ## 🚀 Installation
 
 ### Homebrew (macOS/Linux)
