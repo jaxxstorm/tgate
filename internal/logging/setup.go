@@ -1,3 +1,4 @@
+// internal/logging/setup.go
 package logging
 
 import (
@@ -24,9 +25,11 @@ func SetupLogger(config Config) (*zap.Logger, error) {
 
 	if config.JSON {
 		zapConfig = zap.NewProductionConfig()
+		// Use custom encoder config for better field consistency
+		zapConfig.EncoderConfig = JSONEncoderConfig()
 	} else {
 		zapConfig = zap.NewDevelopmentConfig()
-		zapConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		zapConfig.EncoderConfig = ConsoleEncoderConfig()
 	}
 
 	// Set log level
@@ -133,6 +136,23 @@ func (mw *MultiWriter) AddWriter(writer io.Writer) {
 }
 
 // GetSugaredLogger creates a sugared logger from a regular logger
+// Note: Prefer structured logging with zap.Logger over sugared logger
 func GetSugaredLogger(logger *zap.Logger) *zap.SugaredLogger {
 	return logger.Sugar()
+}
+
+// CreateProductionLogger creates a production-ready logger with optimal settings
+func CreateProductionLogger(outputPaths []string) (*zap.Logger, error) {
+	config := zap.NewProductionConfig()
+	config.OutputPaths = outputPaths
+	config.EncoderConfig = JSONEncoderConfig()
+	return config.Build()
+}
+
+// CreateDevelopmentLogger creates a development logger with human-readable output
+func CreateDevelopmentLogger(outputPaths []string) (*zap.Logger, error) {
+	config := zap.NewDevelopmentConfig()
+	config.OutputPaths = outputPaths
+	config.EncoderConfig = ConsoleEncoderConfig()
+	return config.Build()
 }

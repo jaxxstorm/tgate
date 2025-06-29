@@ -1,3 +1,4 @@
+// internal/logging/levels.go
 package logging
 
 import (

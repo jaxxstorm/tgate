@@ -1,3 +1,4 @@
+// internal/tui/model.go
 package tui
 
 import (
@@ -39,9 +40,7 @@ type LogMsg struct {
 	Time    time.Time
 }
 
-// LogMessage is an alias for LogMsg to match the logging package
-type LogMessage = LogMsg
-
+// RequestMsg is the correct message type for request updates
 type RequestMsg struct {
 	Log model.RequestLog
 }
@@ -73,32 +72,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		if !m.ready {
-			// Calculate pane sizes with proper margins
-			// Reserve space for titles (1 line each) + borders (2 lines each) + footer (1 line)
-			reservedHeight := 8 // 3 titles + 6 border lines + 1 footer
+			// Calculate pane sizes with better logic
+			// Reserve space for titles, borders, and footer
+			reservedHeight := 8 // titles + borders + footer
 			availableHeight := msg.Height - reservedHeight
 			
-			// Split remaining height: 60% for top section, 40% for bottom
-			topSectionHeight := (availableHeight * 6) / 10
+			// Ensure minimum height
+			if availableHeight < 20 {
+				availableHeight = 20
+			}
+			
+			// Split: 70% for top section, 30% for bottom
+			topSectionHeight := (availableHeight * 7) / 10
 			bottomSectionHeight := availableHeight - topSectionHeight
 			
-			// Each top pane gets half the width
-			topPaneWidth := (msg.Width - 2) / 2 // -2 for side margins
+			// Ensure minimums
+			if topSectionHeight < 8 {
+				topSectionHeight = 8
+			}
+			if bottomSectionHeight < 10 {
+				bottomSectionHeight = 10
+			}
 			
-			// Create viewports with safe minimums
-			if topSectionHeight < 5 {
-				topSectionHeight = 5
-			}
-			if bottomSectionHeight < 5 {
-				bottomSectionHeight = 5
-			}
-			if topPaneWidth < 20 {
-				topPaneWidth = 20
+			// Each top pane gets half the width minus padding
+			topPaneWidth := (msg.Width - 6) / 2 // Leave room for borders and spacing
+			if topPaneWidth < 30 {
+				topPaneWidth = 30
 			}
 
-			m.statsPane = viewport.New(topPaneWidth-2, topSectionHeight)
-			m.headersPane = viewport.New(topPaneWidth-2, topSectionHeight)
-			m.appLogs = viewport.New(msg.Width-4, bottomSectionHeight)
+			m.statsPane = viewport.New(topPaneWidth, topSectionHeight)
+			m.headersPane = viewport.New(topPaneWidth, topSectionHeight)
+			m.appLogs = viewport.New(msg.Width-6, bottomSectionHeight)
 			m.width = msg.Width
 			m.height = msg.Height
 			m.ready = true
@@ -111,26 +115,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update existing viewports with same logic
 			reservedHeight := 8
 			availableHeight := msg.Height - reservedHeight
-			topSectionHeight := (availableHeight * 6) / 10
-			bottomSectionHeight := availableHeight - topSectionHeight
-			topPaneWidth := (msg.Width - 2) / 2
 			
-			// Safe minimums
-			if topSectionHeight < 5 {
-				topSectionHeight = 5
+			if availableHeight < 20 {
+				availableHeight = 20
 			}
-			if bottomSectionHeight < 5 {
-				bottomSectionHeight = 5
+			
+			topSectionHeight := (availableHeight * 7) / 10
+			bottomSectionHeight := availableHeight - topSectionHeight
+			
+			if topSectionHeight < 8 {
+				topSectionHeight = 8
 			}
-			if topPaneWidth < 20 {
-				topPaneWidth = 20
+			if bottomSectionHeight < 10 {
+				bottomSectionHeight = 10
+			}
+			
+			topPaneWidth := (msg.Width - 6) / 2
+			if topPaneWidth < 30 {
+				topPaneWidth = 30
 			}
 
-			m.statsPane.Width = topPaneWidth - 2
+			m.statsPane.Width = topPaneWidth
 			m.statsPane.Height = topSectionHeight
-			m.headersPane.Width = topPaneWidth - 2
+			m.headersPane.Width = topPaneWidth
 			m.headersPane.Height = topSectionHeight
-			m.appLogs.Width = msg.Width - 4
+			m.appLogs.Width = msg.Width - 6
 			m.appLogs.Height = bottomSectionHeight
 			m.width = msg.Width
 			m.height = msg.Height
@@ -154,7 +163,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add to app logs
 		timestamp := msg.Time.Format("15:04:05")
 		levelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-		if msg.Level == "ERROR" {
+		if msg.Level == "ERROR" || msg.Level == "FATAL" {
 			levelStyle = levelStyle.Foreground(lipgloss.Color("196"))
 		} else if msg.Level == "WARN" {
 			levelStyle = levelStyle.Foreground(lipgloss.Color("208"))
@@ -166,7 +175,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		logLine := fmt.Sprintf("%s %s %s",
 			lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(timestamp),
-			levelStyle.Render(msg.Level),
+			levelStyle.Render(fmt.Sprintf("%-5s", msg.Level)),
 			msg.Message)
 
 		m.appLogLines = append(m.appLogLines, logLine)
@@ -193,6 +202,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "up", "k":
+			if m.ready {
+				m.appLogs.LineUp(1)
+			}
+		case "down", "j":
+			if m.ready {
+				m.appLogs.LineDown(1)
+			}
+		case "pgup":
+			if m.ready {
+				m.appLogs.HalfViewUp()
+			}
+		case "pgdown":
+			if m.ready {
+				m.appLogs.HalfViewDown()
+			}
 		}
 	}
 
@@ -229,9 +254,10 @@ func (m *Model) updateStatsPane() {
 		b.WriteString("\n\n")
 	}
 
-	// Compact stats table with shorter column widths
+	// Stats table
 	b.WriteString(fmt.Sprintf("%-12s %5s %5s %6s %6s %6s %6s\n",
 		"Connections", "ttl", "opn", "rt1", "rt5", "p50", "p90"))
+	b.WriteString(strings.Repeat("─", 55) + "\n")
 
 	// Stats values
 	b.WriteString(fmt.Sprintf("%-12s %5d %5d %6.1f %6.1f %6.1f %6.1f\n",
@@ -239,14 +265,14 @@ func (m *Model) updateStatsPane() {
 
 	b.WriteString("\n")
 
-	// Compact legend
+	// Legend
 	b.WriteString("Legend:\n")
-	b.WriteString("  ttl: Total\n")
-	b.WriteString("  opn: Open\n")
-	b.WriteString("  rt1: Avg 1m (ms)\n")
-	b.WriteString("  rt5: Avg 5m (ms)\n")
-	b.WriteString("  p50: 50th %ile (ms)\n")
-	b.WriteString("  p90: 90th %ile (ms)\n")
+	b.WriteString("  ttl: Total requests\n")
+	b.WriteString("  opn: Open connections\n")
+	b.WriteString("  rt1: Avg response time 1m (ms)\n")
+	b.WriteString("  rt5: Avg response time 5m (ms)\n")
+	b.WriteString("  p50: 50th percentile (ms)\n")
+	b.WriteString("  p90: 90th percentile (ms)\n")
 
 	m.statsPane.SetContent(b.String())
 }
@@ -255,7 +281,7 @@ func (m *Model) updateStatsPane() {
 func (m *Model) updateHeadersPane() {
 	var b strings.Builder
 
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Latest Request Headers"))
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render("Latest Request"))
 	b.WriteString("\n\n")
 
 	if m.lastRequest == nil {
@@ -280,36 +306,93 @@ func (m *Model) updateHeadersPane() {
 		lipgloss.NewStyle().Foreground(statusColor).Render(fmt.Sprintf("%d", m.lastRequest.Response.StatusCode)),
 		m.lastRequest.Duration.Round(time.Millisecond).String()))
 
-	b.WriteString(fmt.Sprintf("From: %s  Time: %s\n\n",
-		m.lastRequest.RemoteAddr,
+	b.WriteString(fmt.Sprintf("From: %s\n",
+		m.lastRequest.RemoteAddr))
+		
+	b.WriteString(fmt.Sprintf("Time: %s\n\n",
 		m.lastRequest.Timestamp.Format("15:04:05")))
 
-	// Request Headers
+	// Request Headers (show as many as fit in the available space)
 	if len(m.lastRequest.Headers) > 0 {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Request Headers:"))
 		b.WriteString("\n")
 
-		var sortedHeaders []string
-		for k := range m.lastRequest.Headers {
-			sortedHeaders = append(sortedHeaders, k)
+		// Priority headers to show first
+		priorityHeaders := []string{"User-Agent", "Content-Type", "Authorization", "Accept", "Host", "Accept-Encoding"}
+		shown := make(map[string]bool)
+		
+		// Show priority headers first
+		for _, key := range priorityHeaders {
+			if value, exists := m.lastRequest.Headers[key]; exists {
+				b.WriteString(fmt.Sprintf("  %s: %s\n",
+					lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(key),
+					truncateString(value, 60))) // Increased truncate length
+				shown[key] = true
+			}
 		}
-		sort.Strings(sortedHeaders)
-
-		for _, k := range sortedHeaders {
+		
+		// Show all remaining headers (not just up to 5)
+		var otherHeaders []string
+		for k := range m.lastRequest.Headers {
+			if !shown[k] {
+				otherHeaders = append(otherHeaders, k)
+			}
+		}
+		sort.Strings(otherHeaders)
+		
+		// Calculate how many more headers we can show based on available space
+		// Rough estimate: we have about (pane_height - current_lines) lines left
+		currentLines := 7 + len(shown) // rough count of lines used so far
+		availableLines := m.headersPane.Height - currentLines - 3 // leave some buffer
+		
+		maxAdditionalHeaders := availableLines
+		if maxAdditionalHeaders < 0 {
+			maxAdditionalHeaders = 0
+		}
+		
+		for i, k := range otherHeaders {
+			if i >= maxAdditionalHeaders {
+				// Show count of remaining headers if we hit the limit
+				remaining := len(otherHeaders) - i
+				if remaining > 0 {
+					b.WriteString(fmt.Sprintf("  %s\n", 
+						lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(
+							fmt.Sprintf("... and %d more headers", remaining))))
+				}
+				break
+			}
 			b.WriteString(fmt.Sprintf("  %s: %s\n",
 				lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Render(k),
-				m.lastRequest.Headers[k]))
+				truncateString(m.lastRequest.Headers[k], 60)))
 		}
 		b.WriteString("\n")
 	}
 
-	// Request Body
+	// Request Body (show more based on available space)
 	if m.lastRequest.Body != "" {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Request Body:"))
 		b.WriteString("\n")
-		if len(m.lastRequest.Body) > 500 {
-			b.WriteString(fmt.Sprintf("[%d bytes - truncated]\n", len(m.lastRequest.Body)))
-			b.WriteString(m.lastRequest.Body[:500])
+		
+		// Calculate remaining space for body
+		currentLines := strings.Count(b.String(), "\n")
+		availableLines := m.headersPane.Height - currentLines - 2 // leave some buffer
+		
+		// Estimate how much body we can show (rough: 80 chars per line)
+		maxBodyChars := availableLines * 80
+		if maxBodyChars < 200 {
+			maxBodyChars = 200 // minimum
+		}
+		
+		if len(m.lastRequest.Body) > maxBodyChars {
+			b.WriteString(fmt.Sprintf("[%d bytes - showing first %d chars]\n", len(m.lastRequest.Body), maxBodyChars))
+			bodyPreview := m.lastRequest.Body[:maxBodyChars]
+			// Try to break at a reasonable point (newline or space)
+			if lastNewline := strings.LastIndex(bodyPreview, "\n"); lastNewline > maxBodyChars-100 {
+				bodyPreview = bodyPreview[:lastNewline]
+			} else if lastSpace := strings.LastIndex(bodyPreview, " "); lastSpace > maxBodyChars-50 {
+				bodyPreview = bodyPreview[:lastSpace]
+			}
+			b.WriteString(bodyPreview)
 			b.WriteString("\n...")
 		} else {
 			b.WriteString(m.lastRequest.Body)
@@ -318,6 +401,14 @@ func (m *Model) updateHeadersPane() {
 	}
 
 	m.headersPane.SetContent(b.String())
+}
+
+// truncateString truncates a string to the specified length
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // View renders the TUI
@@ -334,56 +425,48 @@ func (m Model) View() string {
 
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240"))
+		BorderForeground(lipgloss.Color("240")).
+		Padding(1)
 
-	// Create the top panes (stats and headers) with exact sizing
+	// Create the top panes (stats and headers)
 	leftTopPane := lipgloss.JoinVertical(lipgloss.Top,
 		titleStyle.Render("📊 Statistics"),
 		borderStyle.
-			Width(m.statsPane.Width+1).
-			Height(m.statsPane.Height+1).
+			Width(m.statsPane.Width).
+			Height(m.statsPane.Height).
 			Render(m.statsPane.View()),
 	)
 
 	rightTopPane := lipgloss.JoinVertical(lipgloss.Top,
-		titleStyle.Render("🌐 Request Headers"),
+		titleStyle.Render("🌐 Request Details"),
 		borderStyle.
-			Width(m.headersPane.Width+1).
-			Height(m.headersPane.Height+1).
+			Width(m.headersPane.Width).
+			Height(m.headersPane.Height).
 			Render(m.headersPane.View()),
 	)
 
-	// Join top panes horizontally with no gap
+	// Join top panes horizontally
 	topSection := lipgloss.JoinHorizontal(lipgloss.Top, leftTopPane, rightTopPane)
 
-	// Create bottom pane (logs) with exact sizing
+	// Create bottom pane (logs)
 	bottomPane := lipgloss.JoinVertical(lipgloss.Top,
 		titleStyle.Render("📋 Application Logs"),
 		borderStyle.
-			Width(m.appLogs.Width+1).
-			Height(m.appLogs.Height+1).
+			Width(m.appLogs.Width).
+			Height(m.appLogs.Height).
 			Render(m.appLogs.View()),
 	)
 
-	// Join sections vertically with no gap
+	// Join sections vertically
 	main := lipgloss.JoinVertical(lipgloss.Top, topSection, bottomPane)
 
 	// Add footer
 	footer := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("240")).
-		Render("Press 'q' or Ctrl+C to quit")
+		Render("Press 'q' or Ctrl+C to quit • ↑/↓ or j/k to scroll logs • PgUp/PgDn for faster scrolling")
 
-	// Ensure the final output fits within terminal bounds
+	// Final view
 	finalView := lipgloss.JoinVertical(lipgloss.Top, main, footer)
-	
-	// Truncate if necessary to prevent overflow
-	if m.height > 0 {
-		lines := strings.Split(finalView, "\n")
-		if len(lines) > m.height {
-			lines = lines[:m.height-1]
-			finalView = strings.Join(lines, "\n")
-		}
-	}
 
 	return finalView
 }

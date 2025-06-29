@@ -1,3 +1,4 @@
+// internal/logging/context.go
 package logging
 
 import (
@@ -10,7 +11,7 @@ import (
 type contextKey string
 
 const (
-	loggerKey   contextKey = "logger"
+	loggerKey    contextKey = "logger"
 	requestIDKey contextKey = "request_id"
 	traceIDKey   contextKey = "trace_id"
 )
@@ -91,27 +92,29 @@ func (lm *LoggerMiddleware) WithContext(ctx context.Context, requestID string) c
 	return ctx
 }
 
-// Debug logs a debug message with context
-func Debug(ctx context.Context, msg string, fields ...zap.Field) {
+// Context-aware logging functions (renamed to avoid conflicts with field helpers)
+
+// DebugCtx logs a debug message with context
+func DebugCtx(ctx context.Context, msg string, fields ...zap.Field) {
 	WithFields(ctx, fields...).Debug(msg)
 }
 
-// Info logs an info message with context
-func Info(ctx context.Context, msg string, fields ...zap.Field) {
+// InfoCtx logs an info message with context
+func InfoCtx(ctx context.Context, msg string, fields ...zap.Field) {
 	WithFields(ctx, fields...).Info(msg)
 }
 
-// Warn logs a warning message with context
-func Warn(ctx context.Context, msg string, fields ...zap.Field) {
+// WarnCtx logs a warning message with context
+func WarnCtx(ctx context.Context, msg string, fields ...zap.Field) {
 	WithFields(ctx, fields...).Warn(msg)
 }
 
-// Error logs an error message with context
-func Error(ctx context.Context, msg string, fields ...zap.Field) {
+// ErrorCtx logs an error message with context
+func ErrorCtx(ctx context.Context, msg string, fields ...zap.Field) {
 	WithFields(ctx, fields...).Error(msg)
 }
 
-// Fatal logs a fatal message with context and exits
-func Fatal(ctx context.Context, msg string, fields ...zap.Field) {
+// FatalCtx logs a fatal message with context and exits
+func FatalCtx(ctx context.Context, msg string, fields ...zap.Field) {
 	WithFields(ctx, fields...).Fatal(msg)
 }

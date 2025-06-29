@@ -1,3 +1,4 @@
+// internal/proxy/server.go
 package proxy
 
 import (
@@ -272,14 +273,9 @@ func (s *Server) captureRequest(logEntry model.RequestLog) {
 	}
 	s.logMutex.Unlock()
 
-	// Notify listeners
+	// Notify listeners - this is the primary way to send to TUI now
 	for _, listener := range s.listeners {
 		listener(logEntry)
-	}
-
-	// Send to TUI if available and program is set
-	if s.useTUI && s.program != nil {
-		s.program.Send(RequestMessage{Log: logEntry})
 	}
 }
 
@@ -404,9 +400,4 @@ func (s *Server) SendTUIMessage(msg interface{}) {
 	if s.program != nil {
 		s.program.Send(msg)
 	}
-}
-
-// RequestMessage wraps a request log for TUI messaging
-type RequestMessage struct {
-	Log model.RequestLog
 }

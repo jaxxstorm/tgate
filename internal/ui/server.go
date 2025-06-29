@@ -1,3 +1,4 @@
+//internal/ui/server.go
 package ui
 
 import (

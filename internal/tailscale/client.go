@@ -1,3 +1,4 @@
+//internal/tailscale/client.go
 package tailscale
 
 import (
@@ -12,25 +13,27 @@ import (
 	"tailscale.com/client/local"
 	"tailscale.com/ipn"
 	"tailscale.com/tailcfg"
+
+	"github.com/jaxxstorm/tgate/internal/logging"
 )
 
 // Config holds configuration for Tailscale setup
 type Config struct {
-	MountPath   string
+	MountPath    string
 	EnableFunnel bool
-	UseHTTPS    bool
-	ServePort   int
-	ProxyPort   int
+	UseHTTPS     bool
+	ServePort    int
+	ProxyPort    int
 }
 
 // Client wraps the Tailscale local client with additional functionality
 type Client struct {
 	lc     *local.Client
-	logger *zap.SugaredLogger
+	logger *zap.Logger
 }
 
-// NewClient creates a new Tailscale client
-func NewClient(logger *zap.SugaredLogger) *Client {
+// NewClient creates a new Tailscale client with structured logging
+func NewClient(logger *zap.Logger) *Client {
 	return &Client{
 		lc:     &local.Client{},
 		logger: logger,
@@ -39,24 +42,71 @@ func NewClient(logger *zap.SugaredLogger) *Client {
 
 // IsAvailable checks if local Tailscale is available
 func (c *Client) IsAvailable(ctx context.Context) bool {
+	c.logger.Info(logging.MsgTailscaleAvailability,
+		logging.Component("tailscale_client"),
+	)
+	
 	_, err := c.lc.Status(ctx)
-	return err == nil
+	available := err == nil
+	
+	if available {
+		c.logger.Info(logging.MsgTailscaleDaemonReady,
+			logging.Status("ready"),
+		)
+	} else {
+		c.logger.Info(logging.MsgTailscaleDaemonMissing,
+			logging.Status("not_found"),
+			logging.Error(err),
+		)
+	}
+	
+	return available
 }
 
 // GetDNSName returns the DNS name of this Tailscale node
 func (c *Client) GetDNSName(ctx context.Context) (string, error) {
+	c.logger.Debug("Getting Tailscale DNS name",
+		logging.Component("tailscale_client"),
+		logging.Operation("get_dns_name"),
+	)
+	
 	status, err := c.lc.Status(ctx)
 	if err != nil {
+		c.logger.Error("Failed to get Tailscale status",
+			logging.Component("tailscale_client"),
+			logging.Operation("get_dns_name"),
+			logging.Error(err),
+		)
 		return "", fmt.Errorf("failed to get status: %w", err)
 	}
-	return strings.TrimSuffix(status.Self.DNSName, "."), nil
+	
+	dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
+	c.logger.Debug("Retrieved DNS name",
+		logging.Component("tailscale_client"),
+		zap.String("dns_name", dnsName),
+	)
+	
+	return dnsName, nil
 }
 
 // SetupServe configures Tailscale serve for the given configuration
 func (c *Client) SetupServe(ctx context.Context, config Config) error {
+	c.logger.Info(logging.MsgTailscaleServeSetup,
+		logging.Component("tailscale_serve"),
+		logging.MountPath(config.MountPath),
+		logging.FunnelEnabled(config.EnableFunnel),
+		logging.HTTPSEnabled(config.UseHTTPS),
+		logging.ServePort(config.ServePort),
+		logging.ProxyPort(config.ProxyPort),
+	)
+
 	// Get current serve config
 	sc, err := c.lc.GetServeConfig(ctx)
 	if err != nil {
+		c.logger.Error("Failed to get serve config",
+			logging.Component("tailscale_serve"),
+			logging.Error(err),
+		)
 		return fmt.Errorf("failed to get serve config: %w", err)
 	}
 	if sc == nil {
@@ -100,10 +150,20 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 		}
 	}
 
-	c.logger.Infof("Setting up Tailscale serve on port %d (TLS: %t)", srvPort, useTLS)
+	c.logger.Info("Configuring Tailscale serve",
+		logging.Component("tailscale_serve"),
+		logging.ServePort(int(srvPort)),
+		zap.Bool("use_tls", useTLS),
+		zap.String("dns_name", dnsName),
+		logging.MountPath(mountPath),
+	)
 
 	// Check if port is already in use
 	if sc.IsTCPForwardingOnPort(srvPort) {
+		c.logger.Error("Port already in use for TCP forwarding",
+			logging.Component("tailscale_serve"),
+			logging.ServePort(int(srvPort)),
+		)
 		return fmt.Errorf("port %d is already serving TCP", srvPort)
 	}
 
@@ -112,7 +172,11 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 
 	// If using HTTPS/TLS, set up TCP handler for TLS termination
 	if useTLS {
-		c.logger.Infof("🔍 Setting up HTTPS TCP handler for TLS termination...")
+		c.logger.Info("Setting up HTTPS TCP handler for TLS termination",
+			logging.Component("tailscale_serve"),
+			logging.ServePort(int(srvPort)),
+		)
+		
 		if sc.TCP == nil {
 			sc.TCP = make(map[uint16]*ipn.TCPPortHandler)
 		}
@@ -121,49 +185,66 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 		}
 
 		if err := c.enableHTTPSFeature(ctx); err != nil {
-			c.logger.Warnf("⚠️  HTTPS feature check failed: %v", err)
-			c.logger.Infof("💡 HTTPS may not work properly without certificates")
-			c.logger.Infof("💡 Consider using HTTP mode instead: remove --use-https flag")
+			c.logger.Warn("HTTPS feature check failed",
+				logging.Component("tailscale_serve"),
+				logging.Error(err),
+				logging.Status("https_may_not_work"),
+			)
 		}
 	}
 
 	// Enable funnel if requested (only works with HTTPS/443)
 	if config.EnableFunnel {
 		if !useTLS || srvPort != 443 {
-			c.logger.Warnf("Funnel requires HTTPS on port 443, but serving on port %d with TLS=%t", srvPort, useTLS)
-			c.logger.Infof("Consider using --use-https or --serve-port=443")
+			c.logger.Error("Funnel configuration invalid",
+				logging.Component("tailscale_serve"),
+				logging.ServePort(int(srvPort)),
+				zap.Bool("use_tls", useTLS),
+				logging.Status("funnel_requires_https_443"),
+			)
 			return fmt.Errorf("funnel requires HTTPS on port 443")
 		}
 
 		// Enable HTTPS feature first if needed
 		if err := c.enableHTTPSFeature(ctx); err != nil {
-			c.logger.Errorf("❌ Failed to enable HTTPS feature: %v", err)
-			c.logger.Infof("💡 Please enable HTTPS certificates in your Tailscale admin console:")
-			c.logger.Infof("   1. Go to https://login.tailscale.com/admin/dns")
-			c.logger.Infof("   2. Enable 'HTTPS Certificates'")
-			c.logger.Infof("   3. Wait a few minutes for provisioning")
-			c.logger.Infof("   4. Try again")
+			c.logger.Error("Failed to enable HTTPS feature for funnel",
+				logging.Component("tailscale_serve"),
+				logging.Error(err),
+				logging.Status("funnel_setup_failed"),
+			)
 			return fmt.Errorf("HTTPS certificates not enabled: %w", err)
 		}
 
 		// Check certificate status before enabling funnel
-		c.logger.Infof("🔍 Checking HTTPS certificate status for funnel...")
+		c.logger.Info("Checking HTTPS certificate status for funnel",
+			logging.Component("tailscale_serve"),
+			zap.String("dns_name", dnsName),
+		)
+		
 		if err := c.checkTailscaleCertificates(ctx, dnsName); err != nil {
-			c.logger.Errorf("❌ Certificate check failed: %v", err)
-			c.logger.Infof("💡 You can:")
-			c.logger.Infof("   • Wait a few minutes if certificates are still provisioning")
-			c.logger.Infof("   • Try running without --funnel first to test local access")
-			c.logger.Infof("   • Check https://login.tailscale.com/admin/dns for certificate settings")
+			c.logger.Error("Certificate check failed for funnel",
+				logging.Component("tailscale_serve"),
+				zap.String("dns_name", dnsName),
+				logging.Error(err),
+				logging.Status("funnel_cert_check_failed"),
+			)
 			return fmt.Errorf("cannot enable funnel: %w", err)
 		}
 
 		sc.SetFunnel(dnsName, srvPort, true)
-		c.logger.Infof("🌍 Funnel enabled - service will be available on the internet")
+		c.logger.Info("Funnel enabled successfully",
+			logging.Component("tailscale_serve"),
+			logging.Status("internet_accessible"),
+		)
 	}
 
 	// Apply the serve config
 	err = c.lc.SetServeConfig(ctx, sc)
 	if err != nil {
+		c.logger.Error("Failed to apply serve config",
+			logging.Component("tailscale_serve"),
+			logging.Error(err),
+		)
 		return fmt.Errorf("failed to set serve config: %w", err)
 	}
 
@@ -181,14 +262,19 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 	url := fmt.Sprintf("%s://%s%s%s", scheme, dnsName, portPart, mountPath)
 
 	if config.EnableFunnel {
-		c.logger.Infof("🌍 Available on the internet: %s", url)
-		c.logger.Infof("💡 If you get TLS errors, certificates may still be provisioning")
-		c.logger.Infof("💡 Try again in 2-3 minutes if the connection fails")
+		c.logger.Info(logging.MsgTailscaleServeSuccess,
+			logging.Component("tailscale_serve"),
+			logging.URL(url),
+			logging.Status("internet_accessible"),
+			zap.String("scheme", scheme),
+		)
 	} else {
-		c.logger.Infof("🔒 Available within your tailnet: %s", url)
-		if useTLS {
-			c.logger.Infof("💡 If you get TLS errors, try HTTP first or wait for certificate provisioning")
-		}
+		c.logger.Info(logging.MsgTailscaleServeSuccess,
+			logging.Component("tailscale_serve"),
+			logging.URL(url),
+			logging.Status("tailnet_only"),
+			zap.String("scheme", scheme),
+		)
 	}
 
 	return nil
@@ -196,9 +282,18 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 
 // SetupUIServe sets up Tailscale serve for the UI dashboard
 func (c *Client) SetupUIServe(ctx context.Context, uiPort int) (uint16, string, error) {
+	c.logger.Info("Setting up Tailscale UI serve",
+		logging.Component("tailscale_ui_serve"),
+		logging.UIPort(uiPort),
+	)
+
 	// Get current serve config
 	sc, err := c.lc.GetServeConfig(ctx)
 	if err != nil {
+		c.logger.Error("Failed to get serve config for UI",
+			logging.Component("tailscale_ui_serve"),
+			logging.Error(err),
+		)
 		return 0, "", fmt.Errorf("failed to get serve config: %w", err)
 	}
 	if sc == nil {
@@ -214,8 +309,18 @@ func (c *Client) SetupUIServe(ctx context.Context, uiPort int) (uint16, string, 
 	// Find available Tailscale port starting from a random port
 	tailscalePort, err := c.findAvailableTailscalePort(sc, 8080)
 	if err != nil {
+		c.logger.Error("Failed to find available Tailscale port for UI",
+			logging.Component("tailscale_ui_serve"),
+			logging.Error(err),
+		)
 		return 0, "", fmt.Errorf("failed to find available Tailscale port: %w", err)
 	}
+
+	c.logger.Info("Allocated Tailscale port for UI",
+		logging.Component("tailscale_ui_serve"),
+		logging.TailscalePort(int(tailscalePort)),
+		logging.UIPort(uiPort),
+	)
 
 	uiHandler := &ipn.HTTPHandler{
 		Proxy: fmt.Sprintf("http://localhost:%d", uiPort),
@@ -226,26 +331,47 @@ func (c *Client) SetupUIServe(ctx context.Context, uiPort int) (uint16, string, 
 	// Apply the serve config
 	err = c.lc.SetServeConfig(ctx, sc)
 	if err != nil {
+		c.logger.Error("Failed to apply UI serve config",
+			logging.Component("tailscale_ui_serve"),
+			logging.Error(err),
+		)
 		return 0, "", fmt.Errorf("failed to set UI serve config: %w", err)
 	}
 
 	uiURL := fmt.Sprintf("http://%s:%d/ui/", dnsName, tailscalePort)
-	c.logger.Infof("🎨 Web UI available within your tailnet: %s", uiURL)
+	
+	c.logger.Info("Web UI serve configured successfully",
+		logging.Component("tailscale_ui_serve"),
+		logging.URL(uiURL),
+		logging.TailscalePort(int(tailscalePort)),
+		logging.Status("tailnet_accessible"),
+	)
 
 	return tailscalePort, uiURL, nil
 }
 
 // Cleanup removes Tailscale serve configuration
 func (c *Client) Cleanup(ctx context.Context, config Config) error {
+	c.logger.Info(logging.MsgCleanupStarting,
+		logging.Component("tailscale_serve"),
+		logging.ProxyPort(config.ProxyPort),
+	)
+
 	sc, err := c.lc.GetServeConfig(ctx)
 	if err != nil || sc == nil {
-		c.logger.Debugf("No serve config to clean up: %v", err)
+		c.logger.Debug("No serve config to clean up",
+			logging.Component("tailscale_serve"),
+			logging.Error(err),
+		)
 		return nil // Nothing to clean up
 	}
 
 	dnsName, err := c.GetDNSName(ctx)
 	if err != nil {
-		c.logger.Warnf("Failed to get DNS name during cleanup: %v", err)
+		c.logger.Warn("Failed to get DNS name during cleanup",
+			logging.Component("tailscale_serve"),
+			logging.Error(err),
+		)
 		return err
 	}
 
@@ -273,7 +399,11 @@ func (c *Client) Cleanup(ctx context.Context, config Config) error {
 	safeRemoveWebHandler := func(dnsName string, port uint16, paths []string, allowFunnel bool) {
 		defer func() {
 			if r := recover(); r != nil {
-				c.logger.Warnf("Recovered from panic while removing web handler on port %d: %v", port, r)
+				c.logger.Warn("Recovered from panic during web handler removal",
+					logging.Component("tailscale_serve"),
+					logging.ServePort(int(port)),
+					zap.Any("panic", r),
+				)
 			}
 		}()
 
@@ -283,7 +413,12 @@ func (c *Client) Cleanup(ctx context.Context, config Config) error {
 			if hostConfig, exists := sc.Web[hostPort]; exists {
 				if _, portExists := hostConfig.Handlers[fmt.Sprintf("%d", port)]; portExists {
 					sc.RemoveWebHandler(dnsName, port, paths, allowFunnel)
-					c.logger.Debugf("Removed web handler for %s:%d%v", dnsName, port, paths)
+					c.logger.Debug("Removed web handler",
+						logging.Component("tailscale_serve"),
+						zap.String("dns_name", dnsName),
+						logging.ServePort(int(port)),
+						zap.Strings("paths", paths),
+					)
 				}
 			}
 		}
@@ -300,10 +435,15 @@ func (c *Client) Cleanup(ctx context.Context, config Config) error {
 	// Apply the updated config
 	err = c.lc.SetServeConfig(ctx, sc)
 	if err != nil {
-		c.logger.Warnf("Failed to cleanup serve config: %v", err)
+		c.logger.Warn("Failed to apply cleanup config",
+			logging.Component("tailscale_serve"),
+			logging.Error(err),
+		)
 		return err
 	} else {
-		c.logger.Infof("Cleaned up Tailscale serve configuration")
+		c.logger.Info(logging.MsgCleanupComplete,
+			logging.Component("tailscale_serve"),
+		)
 	}
 
 	return nil
@@ -311,54 +451,75 @@ func (c *Client) Cleanup(ctx context.Context, config Config) error {
 
 // enableHTTPSFeature enables HTTPS capability for the tailnet
 func (c *Client) enableHTTPSFeature(ctx context.Context) error {
+	c.logger.Debug("Checking HTTPS capability",
+		logging.Component("tailscale_https"),
+		logging.Operation("enable_https_feature"),
+	)
+
 	// Check if HTTPS is already enabled
 	status, err := c.lc.Status(ctx)
 	if err != nil {
+		c.logger.Error("Failed to get status for HTTPS check",
+			logging.Component("tailscale_https"),
+			logging.Error(err),
+		)
 		return fmt.Errorf("failed to get status: %w", err)
 	}
 
 	if status.Self.HasCap(tailcfg.CapabilityHTTPS) {
-		c.logger.Infof("✅ HTTPS capability already enabled")
+		c.logger.Info("HTTPS capability already enabled",
+			logging.Component("tailscale_https"),
+			logging.Status("already_enabled"),
+		)
 		return nil
 	}
 
-	c.logger.Infof("🔍 HTTPS capability not enabled, need to enable it...")
-	c.logger.Infof("💡 This will enable HTTPS certificate provisioning for your tailnet")
-	c.logger.Infof("💡 Go to https://login.tailscale.com/admin/dns and enable 'HTTPS Certificates'")
-	c.logger.Infof("💡 Or wait while we try to enable it automatically...")
-
-	// Try to enable HTTPS capability
-	// Note: This might require admin permissions or interactive approval
-	// The exact API for this isn't publicly documented, so we'll provide guidance
+	c.logger.Warn("HTTPS capability not enabled",
+		logging.Component("tailscale_https"),
+		logging.Status("requires_manual_setup"),
+	)
 
 	return fmt.Errorf("HTTPS capability needs to be enabled in your Tailscale admin console")
 }
 
 // checkTailscaleCertificates checks if HTTPS certificates are available
 func (c *Client) checkTailscaleCertificates(ctx context.Context, dnsName string) error {
+	c.logger.Debug("Checking Tailscale certificates",
+		logging.Component("tailscale_https"),
+		zap.String("dns_name", dnsName),
+		logging.Operation("check_certificates"),
+	)
+
 	// Check if HTTPS certificates are available
 	status, err := c.lc.Status(ctx)
 	if err != nil {
+		c.logger.Error("Failed to get status for certificate check",
+			logging.Component("tailscale_https"),
+			logging.Error(err),
+		)
 		return fmt.Errorf("failed to get status: %w", err)
 	}
 
 	// Check if the node has HTTPS capability
 	if !status.Self.HasCap(tailcfg.CapabilityHTTPS) {
-		c.logger.Warnf("❌ Node does not have HTTPS capability enabled")
-		c.logger.Infof("💡 To enable HTTPS certificates:")
-		c.logger.Infof("   1. Go to https://login.tailscale.com/admin/dns")
-		c.logger.Infof("   2. Enable 'HTTPS Certificates' for your tailnet")
-		c.logger.Infof("   3. Wait a few minutes for certificate provisioning")
+		c.logger.Error("Node does not have HTTPS capability",
+			logging.Component("tailscale_https"),
+			logging.Status("https_not_enabled"),
+		)
 		return fmt.Errorf("HTTPS certificates not enabled for this tailnet")
 	}
 
-	c.logger.Infof("✅ HTTPS capability is enabled for this tailnet")
+	c.logger.Info("HTTPS capability confirmed",
+		logging.Component("tailscale_https"),
+		logging.Status("capability_enabled"),
+	)
 
-	// Check certificate status - this is a bit tricky as the API doesn't directly expose cert status
-	// We can try to check if certificates exist by looking at the certificate domains
+	// Check certificate status
 	if len(status.CertDomains) == 0 {
-		c.logger.Warnf("⚠️  No certificate domains found")
-		c.logger.Infof("💡 Certificate provisioning may still be in progress")
+		c.logger.Warn("No certificate domains found",
+			logging.Component("tailscale_https"),
+			logging.Status("no_cert_domains"),
+		)
 		return fmt.Errorf("no certificate domains available")
 	}
 
@@ -372,13 +533,20 @@ func (c *Client) checkTailscaleCertificates(ctx context.Context, dnsName string)
 	}
 
 	if !found {
-		c.logger.Warnf("⚠️  Certificate not found for domain %s", dnsName)
-		c.logger.Infof("💡 Available certificate domains: %v", status.CertDomains)
-		c.logger.Infof("💡 Certificate provisioning may still be in progress")
+		c.logger.Warn("Certificate not found for domain",
+			logging.Component("tailscale_https"),
+			zap.String("dns_name", dnsName),
+			zap.Strings("available_domains", status.CertDomains),
+			logging.Status("cert_not_available"),
+		)
 		return fmt.Errorf("certificate not available for domain %s", dnsName)
 	}
 
-	c.logger.Infof("✅ Certificate appears to be available for %s", dnsName)
+	c.logger.Info("Certificate confirmed for domain",
+		logging.Component("tailscale_https"),
+		zap.String("dns_name", dnsName),
+		logging.Status("cert_available"),
+	)
 	return nil
 }
 
@@ -388,6 +556,11 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 	rand.Seed(time.Now().UnixNano())
 	randomOffset := rand.Intn(100) // Random offset 0-99
 	actualStartPort := startPort + uint16(randomOffset)
+
+	c.logger.Debug("Finding available Tailscale port",
+		logging.Component("tailscale_port_allocation"),
+		logging.StartPort(int(actualStartPort)),
+	)
 	
 	for port := actualStartPort; port < actualStartPort+200; port++ {
 		if !sc.IsTCPForwardingOnPort(port) {
@@ -402,10 +575,19 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 				}
 			}
 			if available {
+				c.logger.Debug("Found available Tailscale port",
+					logging.Component("tailscale_port_allocation"),
+					logging.Port(int(port)),
+				)
 				return port, nil
 			}
 		}
 	}
+	
+	c.logger.Error("No available Tailscale port found",
+		logging.Component("tailscale_port_allocation"),
+		logging.StartPort(int(actualStartPort)),
+	)
 	return 0, fmt.Errorf("no available Tailscale port found starting from %d", actualStartPort)
 }
 
