@@ -4,10 +4,9 @@ package tailscale
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"strings"
-	"time"
 
 	"go.uber.org/zap"
 	"tailscale.com/client/local"
@@ -547,9 +546,8 @@ func (c *Client) checkTailscaleCertificates(ctx context.Context, dnsName string)
 
 // findAvailableTailscalePort finds an available port for Tailscale serve
 func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint16) (uint16, error) {
-	// Use a more random starting port to avoid conflicts
-	rand.Seed(time.Now().UnixNano())
-	randomOffset := rand.Intn(100) // Random offset 0-99
+	// Use a random starting port to avoid conflicts
+	randomOffset := rand.IntN(100) // Random offset 0-99
 	actualStartPort := startPort + uint16(randomOffset)
 
 	c.logger.Debug("Finding available Tailscale port",
@@ -589,15 +587,14 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 // FindAvailableLocalPort finds an available local port starting from a random port
 func FindAvailableLocalPort() (int, error) {
 	// Use a random starting port in the ephemeral port range (49152-65535)
-	rand.Seed(time.Now().UnixNano())
-	startPort := 49152 + rand.Intn(10000) // Random port between 49152 and 59151
-
+	startPort := 49152 + rand.IntN(10000) // Random port between 49152 and 59151
+	
 	for port := startPort; port < startPort+1000; port++ {
 		if port > 65535 {
 			// Wrap around if we exceed the port range
 			port = 49152 + (port - 65535)
 		}
-
+		
 		ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
 			ln.Close()
