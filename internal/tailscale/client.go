@@ -1,4 +1,4 @@
-//internal/tailscale/client.go
+// internal/tailscale/client.go
 package tailscale
 
 import (
@@ -26,6 +26,18 @@ type Config struct {
 	ProxyPort    int
 }
 
+// ServiceInfo holds information about the configured service
+type ServiceInfo struct {
+	URL       string // The Tailscale URL where the service is accessible
+	LocalURL  string // Local proxy URL (for development/testing)
+	DNSName   string // Tailscale DNS name
+	ServePort int    // Port used by Tailscale serve
+	ProxyPort int    // Local proxy port
+	IsFunnel  bool   // Whether funnel is enabled (internet accessible)
+	IsHTTPS   bool   // Whether HTTPS is enabled
+	MountPath string // Mount path for the service
+}
+
 // Client wraps the Tailscale local client with additional functionality
 type Client struct {
 	lc     *local.Client
@@ -45,10 +57,10 @@ func (c *Client) IsAvailable(ctx context.Context) bool {
 	c.logger.Info(logging.MsgTailscaleAvailability,
 		logging.Component("tailscale_client"),
 	)
-	
+
 	_, err := c.lc.Status(ctx)
 	available := err == nil
-	
+
 	if available {
 		c.logger.Info(logging.MsgTailscaleDaemonReady,
 			logging.Status("ready"),
@@ -59,7 +71,7 @@ func (c *Client) IsAvailable(ctx context.Context) bool {
 			logging.Error(err),
 		)
 	}
-	
+
 	return available
 }
 
@@ -69,7 +81,7 @@ func (c *Client) GetDNSName(ctx context.Context) (string, error) {
 		logging.Component("tailscale_client"),
 		logging.Operation("get_dns_name"),
 	)
-	
+
 	status, err := c.lc.Status(ctx)
 	if err != nil {
 		c.logger.Error("Failed to get Tailscale status",
@@ -79,23 +91,21 @@ func (c *Client) GetDNSName(ctx context.Context) (string, error) {
 		)
 		return "", fmt.Errorf("failed to get status: %w", err)
 	}
-	
+
 	dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
 	c.logger.Debug("Retrieved DNS name",
 		logging.Component("tailscale_client"),
 		zap.String("dns_name", dnsName),
 	)
-	
+
 	return dnsName, nil
 }
 
 // SetupServe configures Tailscale serve for the given configuration
-func (c *Client) SetupServe(ctx context.Context, config Config) error {
-	c.logger.Info(logging.MsgTailscaleServeSetup,
+func (c *Client) SetupServe(ctx context.Context, config Config) (*ServiceInfo, error) {
+	// Use shorter log messages to avoid TUI truncation issues
+	c.logger.Info("Tailscale serve setup starting",
 		logging.Component("tailscale_serve"),
-		logging.MountPath(config.MountPath),
-		logging.FunnelEnabled(config.EnableFunnel),
-		logging.HTTPSEnabled(config.UseHTTPS),
 		logging.ServePort(config.ServePort),
 		logging.ProxyPort(config.ProxyPort),
 	)
@@ -107,7 +117,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 			logging.Component("tailscale_serve"),
 			logging.Error(err),
 		)
-		return fmt.Errorf("failed to get serve config: %w", err)
+		return nil, fmt.Errorf("failed to get serve config: %w", err)
 	}
 	if sc == nil {
 		sc = new(ipn.ServeConfig)
@@ -116,7 +126,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 	// Get DNS name
 	dnsName, err := c.GetDNSName(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Set up HTTP handler for the proxy target
@@ -150,12 +160,10 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 		}
 	}
 
-	c.logger.Info("Configuring Tailscale serve",
+	c.logger.Info("Tailscale serve configuration",
 		logging.Component("tailscale_serve"),
 		logging.ServePort(int(srvPort)),
 		zap.Bool("use_tls", useTLS),
-		zap.String("dns_name", dnsName),
-		logging.MountPath(mountPath),
 	)
 
 	// Check if port is already in use
@@ -164,7 +172,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 			logging.Component("tailscale_serve"),
 			logging.ServePort(int(srvPort)),
 		)
-		return fmt.Errorf("port %d is already serving TCP", srvPort)
+		return nil, fmt.Errorf("port %d is already serving TCP", srvPort)
 	}
 
 	// Set web handler
@@ -176,7 +184,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 			logging.Component("tailscale_serve"),
 			logging.ServePort(int(srvPort)),
 		)
-		
+
 		if sc.TCP == nil {
 			sc.TCP = make(map[uint16]*ipn.TCPPortHandler)
 		}
@@ -202,7 +210,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 				zap.Bool("use_tls", useTLS),
 				logging.Status("funnel_requires_https_443"),
 			)
-			return fmt.Errorf("funnel requires HTTPS on port 443")
+			return nil, fmt.Errorf("funnel requires HTTPS on port 443")
 		}
 
 		// Enable HTTPS feature first if needed
@@ -212,7 +220,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 				logging.Error(err),
 				logging.Status("funnel_setup_failed"),
 			)
-			return fmt.Errorf("HTTPS certificates not enabled: %w", err)
+			return nil, fmt.Errorf("HTTPS certificates not enabled: %w", err)
 		}
 
 		// Check certificate status before enabling funnel
@@ -220,7 +228,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 			logging.Component("tailscale_serve"),
 			zap.String("dns_name", dnsName),
 		)
-		
+
 		if err := c.checkTailscaleCertificates(ctx, dnsName); err != nil {
 			c.logger.Error("Certificate check failed for funnel",
 				logging.Component("tailscale_serve"),
@@ -228,7 +236,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 				logging.Error(err),
 				logging.Status("funnel_cert_check_failed"),
 			)
-			return fmt.Errorf("cannot enable funnel: %w", err)
+			return nil, fmt.Errorf("cannot enable funnel: %w", err)
 		}
 
 		sc.SetFunnel(dnsName, srvPort, true)
@@ -245,7 +253,7 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 			logging.Component("tailscale_serve"),
 			logging.Error(err),
 		)
-		return fmt.Errorf("failed to set serve config: %w", err)
+		return nil, fmt.Errorf("failed to set serve config: %w", err)
 	}
 
 	// Display URL information
@@ -262,22 +270,30 @@ func (c *Client) SetupServe(ctx context.Context, config Config) error {
 	url := fmt.Sprintf("%s://%s%s%s", scheme, dnsName, portPart, mountPath)
 
 	if config.EnableFunnel {
-		c.logger.Info(logging.MsgTailscaleServeSuccess,
+		c.logger.Info("Tailscale serve success - internet accessible",
 			logging.Component("tailscale_serve"),
 			logging.URL(url),
-			logging.Status("internet_accessible"),
-			zap.String("scheme", scheme),
 		)
 	} else {
-		c.logger.Info(logging.MsgTailscaleServeSuccess,
+		c.logger.Info("Tailscale serve success - tailnet only",
 			logging.Component("tailscale_serve"),
 			logging.URL(url),
-			logging.Status("tailnet_only"),
-			zap.String("scheme", scheme),
 		)
 	}
 
-	return nil
+	// Create ServiceInfo to return
+	serviceInfo := &ServiceInfo{
+		URL:       url,
+		LocalURL:  fmt.Sprintf("http://localhost:%d", config.ProxyPort),
+		DNSName:   dnsName,
+		ServePort: int(srvPort),
+		ProxyPort: config.ProxyPort,
+		IsFunnel:  config.EnableFunnel,
+		IsHTTPS:   useTLS,
+		MountPath: mountPath,
+	}
+
+	return serviceInfo, nil
 }
 
 // SetupUIServe sets up Tailscale serve for the UI dashboard
@@ -339,7 +355,7 @@ func (c *Client) SetupUIServe(ctx context.Context, uiPort int) (uint16, string, 
 	}
 
 	uiURL := fmt.Sprintf("http://%s:%d/ui/", dnsName, tailscalePort)
-	
+
 	c.logger.Info("Web UI serve configured successfully",
 		logging.Component("tailscale_ui_serve"),
 		logging.URL(uiURL),
@@ -375,67 +391,18 @@ func (c *Client) Cleanup(ctx context.Context, config Config) error {
 		return err
 	}
 
-	mountPath := config.MountPath
-	if mountPath == "" {
-		mountPath = "/"
-	}
-	if !strings.HasPrefix(mountPath, "/") {
-		mountPath = "/" + mountPath
-	}
+	// Create a completely empty serve config to clear everything
+	emptyConfig := &ipn.ServeConfig{}
 
-	// Determine the port we used for serving
-	var srvPort uint16
-	if config.ServePort != 0 {
-		srvPort = uint16(config.ServePort)
-	} else {
-		if config.UseHTTPS {
-			srvPort = 443
-		} else {
-			srvPort = 80
-		}
-	}
+	c.logger.Info("Clearing all Tailscale serve configurations",
+		logging.Component("tailscale_serve"),
+		zap.String("dns_name", dnsName),
+	)
 
-	// Helper function to safely remove web handlers
-	safeRemoveWebHandler := func(dnsName string, port uint16, paths []string, allowFunnel bool) {
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Warn("Recovered from panic during web handler removal",
-					logging.Component("tailscale_serve"),
-					logging.ServePort(int(port)),
-					zap.Any("panic", r),
-				)
-			}
-		}()
-
-		// Check if the web config exists for this port before trying to remove
-		if sc.Web != nil {
-			hostPort := ipn.HostPort(dnsName + ":" + fmt.Sprintf("%d", port))
-			if hostConfig, exists := sc.Web[hostPort]; exists {
-				if _, portExists := hostConfig.Handlers[fmt.Sprintf("%d", port)]; portExists {
-					sc.RemoveWebHandler(dnsName, port, paths, allowFunnel)
-					c.logger.Debug("Removed web handler",
-						logging.Component("tailscale_serve"),
-						zap.String("dns_name", dnsName),
-						logging.ServePort(int(port)),
-						zap.Strings("paths", paths),
-					)
-				}
-			}
-		}
-	}
-
-	// Remove main service handler
-	safeRemoveWebHandler(dnsName, srvPort, []string{mountPath}, true)
-
-	// Also cleanup potential UI handlers
-	safeRemoveWebHandler(dnsName, 8080, []string{"/ui/"}, false)
-	safeRemoveWebHandler(dnsName, 8081, []string{"/ui/"}, false)
-	safeRemoveWebHandler(dnsName, 8082, []string{"/ui/"}, false)
-
-	// Apply the updated config
-	err = c.lc.SetServeConfig(ctx, sc)
+	// Apply the empty config to clear all serve configurations
+	err = c.lc.SetServeConfig(ctx, emptyConfig)
 	if err != nil {
-		c.logger.Warn("Failed to apply cleanup config",
+		c.logger.Warn("Failed to clear serve config",
 			logging.Component("tailscale_serve"),
 			logging.Error(err),
 		)
@@ -445,6 +412,34 @@ func (c *Client) Cleanup(ctx context.Context, config Config) error {
 			logging.Component("tailscale_serve"),
 		)
 	}
+
+	return nil
+}
+
+// CleanupAll removes all Tailscale serve configurations (not just from this session)
+func (c *Client) CleanupAll(ctx context.Context) error {
+	c.logger.Info("Clearing ALL Tailscale serve configurations",
+		logging.Component("tailscale_serve"),
+		logging.Operation("cleanup_all"),
+	)
+
+	// Create a completely empty serve config to clear everything
+	emptyConfig := &ipn.ServeConfig{}
+
+	// Apply the empty config to clear all serve configurations
+	err := c.lc.SetServeConfig(ctx, emptyConfig)
+	if err != nil {
+		c.logger.Error("Failed to clear all serve configurations",
+			logging.Component("tailscale_serve"),
+			logging.Error(err),
+		)
+		return err
+	}
+
+	c.logger.Info("All Tailscale serve configurations cleared",
+		logging.Component("tailscale_serve"),
+		logging.Status("all_cleared"),
+	)
 
 	return nil
 }
@@ -561,7 +556,7 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 		logging.Component("tailscale_port_allocation"),
 		logging.StartPort(int(actualStartPort)),
 	)
-	
+
 	for port := actualStartPort; port < actualStartPort+200; port++ {
 		if !sc.IsTCPForwardingOnPort(port) {
 			// Also check if web handlers exist on this port
@@ -583,7 +578,7 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 			}
 		}
 	}
-	
+
 	c.logger.Error("No available Tailscale port found",
 		logging.Component("tailscale_port_allocation"),
 		logging.StartPort(int(actualStartPort)),
@@ -591,14 +586,23 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 	return 0, fmt.Errorf("no available Tailscale port found starting from %d", actualStartPort)
 }
 
-// FindAvailableLocalPort finds an available local port
-func FindAvailableLocalPort(startPort int) (int, error) {
-	for port := startPort; port < startPort+100; port++ {
+// FindAvailableLocalPort finds an available local port starting from a random port
+func FindAvailableLocalPort() (int, error) {
+	// Use a random starting port in the ephemeral port range (49152-65535)
+	rand.Seed(time.Now().UnixNano())
+	startPort := 49152 + rand.Intn(10000) // Random port between 49152 and 59151
+
+	for port := startPort; port < startPort+1000; port++ {
+		if port > 65535 {
+			// Wrap around if we exceed the port range
+			port = 49152 + (port - 65535)
+		}
+
 		ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
 			ln.Close()
 			return port, nil
 		}
 	}
-	return 0, fmt.Errorf("no available port found starting from %d", startPort)
+	return 0, fmt.Errorf("no available port found starting from random port %d", startPort)
 }
