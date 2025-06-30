@@ -51,7 +51,7 @@ func AccessLog(callback func(model.RequestLog)) func(http.Handler) http.Handler 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			
+
 			// Create logging response writer
 			lrw := &LoggingResponseWriter{
 				ResponseWriter: w,
@@ -59,7 +59,7 @@ func AccessLog(callback func(model.RequestLog)) func(http.Handler) http.Handler 
 				size:           0,
 				headers:        make(map[string]string),
 			}
-			
+
 			// Read request body for logging (if not too large)
 			var bodyBytes []byte
 			var bodyString string
@@ -68,21 +68,21 @@ func AccessLog(callback func(model.RequestLog)) func(http.Handler) http.Handler 
 				bodyString = string(bodyBytes)
 				r.Body = io.NopCloser(strings.NewReader(bodyString))
 			}
-			
+
 			// Capture request headers
 			reqHeaders := make(map[string]string)
 			for k, v := range r.Header {
 				reqHeaders[k] = strings.Join(v, ", ")
 			}
-			
+
 			// Serve the request
 			next.ServeHTTP(lrw, r)
-			
+
 			// Capture response headers after serving
 			lrw.captureHeaders()
-			
+
 			duration := time.Since(start)
-			
+
 			// Create request log entry
 			logEntry := model.RequestLog{
 				ID:          generateRequestID(),
@@ -103,7 +103,7 @@ func AccessLog(callback func(model.RequestLog)) func(http.Handler) http.Handler 
 				},
 				Duration: duration,
 			}
-			
+
 			// Call the callback with the log entry
 			if callback != nil {
 				callback(logEntry)
@@ -132,7 +132,7 @@ func CORS(origins []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
-			
+
 			// Check if origin is allowed
 			allowed := false
 			for _, allowedOrigin := range origins {
@@ -141,19 +141,19 @@ func CORS(origins []string) func(http.Handler) http.Handler {
 					break
 				}
 			}
-			
+
 			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 			}
-			
+
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			
+
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -165,10 +165,10 @@ func RequestID() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			requestID := generateRequestID()
 			w.Header().Set("X-Request-ID", requestID)
-			
+
 			// Add request ID to request headers for downstream services
 			r.Header.Set("X-Request-ID", requestID)
-			
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -184,7 +184,7 @@ func Recovery() func(http.Handler) http.Handler {
 					w.Write([]byte("Internal Server Error"))
 				}
 			}()
-			
+
 			next.ServeHTTP(w, r)
 		})
 	}

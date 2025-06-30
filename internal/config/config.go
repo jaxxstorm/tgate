@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/alecthomas/kong"
 )
@@ -50,21 +49,11 @@ func Parse() (*Config, error) {
 
 	// Validate arguments
 	if cli.Mock && cli.Port != 0 {
-		fmt.Fprintf(os.Stderr, "Error: Cannot specify both port and --mock flag\n")
-		fmt.Fprintf(os.Stderr, "Usage: tgate <port> [flags]     (proxy mode)\n")
-		fmt.Fprintf(os.Stderr, "       tgate --mock [flags]     (mock/testing mode)\n")
-		fmt.Fprintf(os.Stderr, "       tgate --version\n")
-		fmt.Fprintf(os.Stderr, "       tgate --cleanup-serve\n")
-		os.Exit(1)
+		return nil, fmt.Errorf("cannot specify both port and --mock flag\nUsage: tgate <port> [flags]     (proxy mode)\n       tgate --mock [flags]     (mock/testing mode)\n       tgate --version\n       tgate --cleanup-serve")
 	}
 
 	if !cli.Mock && cli.Port == 0 {
-		fmt.Fprintf(os.Stderr, "Error: port argument is required (or use --mock for testing mode)\n")
-		fmt.Fprintf(os.Stderr, "Usage: tgate <port> [flags]     (proxy mode)\n")
-		fmt.Fprintf(os.Stderr, "       tgate --mock [flags]     (mock/testing mode)\n")
-		fmt.Fprintf(os.Stderr, "       tgate --version\n")
-		fmt.Fprintf(os.Stderr, "       tgate --cleanup-serve\n")
-		os.Exit(1)
+		return nil, fmt.Errorf("port argument is required (or use --mock for testing mode)\nUsage: tgate <port> [flags]     (proxy mode)\n       tgate --mock [flags]     (mock/testing mode)\n       tgate --version\n       tgate --cleanup-serve")
 	}
 
 	// Auto-configure options

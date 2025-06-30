@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/jaxxstorm/tgate/internal/config"
+	"github.com/jaxxstorm/tgate/internal/httputil"
 	"github.com/jaxxstorm/tgate/internal/logging"
 	"github.com/jaxxstorm/tgate/internal/model"
 	"github.com/jaxxstorm/tgate/internal/proxy"
@@ -35,7 +36,7 @@ var Version = "dev"
 func main() {
 	cfg, err := config.Parse()
 	if err != nil {
-		fmt.Printf("Failed to parse configuration: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -400,11 +401,11 @@ func setupLocalTailscale(ctx context.Context, tsClient *tailscale.Client, proxyS
 	// Start proxy server
 	logger.Info(logging.MsgProxyStarting,
 		logging.ProxyPort(proxyPort),
-		logging.BindAddress("localhost"),
+		logging.BindAddress("0.0.0.0"),
 	)
 
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("localhost:%d", proxyPort),
+		Addr:    fmt.Sprintf(":%d", proxyPort),
 		Handler: proxyServer,
 	}
 
@@ -418,8 +419,15 @@ func setupLocalTailscale(ctx context.Context, tsClient *tailscale.Client, proxyS
 		}
 	}()
 
-	// Give the server a moment to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the server to be ready
+	if err := httputil.WaitForServerReady(ctx, fmt.Sprintf("localhost:%d", proxyPort), 2*time.Second); err != nil {
+		logger.Error("Proxy server failed to start",
+			logging.Component("proxy_server"),
+			logging.ProxyPort(proxyPort),
+			logging.Error(err),
+		)
+		return cleanup, uiCleanup, nil
+	}
 
 	logger.Info(logging.MsgProxyStarted,
 		logging.ProxyPort(proxyPort),
@@ -678,7 +686,7 @@ func setupUIServer(ctx context.Context, tsClient *tailscale.Client, uiPort int, 
 
 	// Start UI server on local port
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("localhost:%d", uiPort),
+		Addr:    fmt.Sprintf(":%d", uiPort),
 		Handler: uiServer,
 	}
 
@@ -692,8 +700,15 @@ func setupUIServer(ctx context.Context, tsClient *tailscale.Client, uiPort int, 
 		}
 	}()
 
-	// Give the server a moment to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the UI server to be ready
+	if err := httputil.WaitForServerReady(ctx, fmt.Sprintf("localhost:%d", uiPort), 2*time.Second); err != nil {
+		logger.Error("UI server failed to start",
+			logging.Component("ui_server"),
+			logging.UIPort(uiPort),
+			logging.Error(err),
+		)
+		return nil, fmt.Errorf("UI server failed to start: %w", err)
+	}
 
 	logger.Info(logging.MsgUIStarted,
 		logging.LocalPort(uiPort),

@@ -1,4 +1,4 @@
-//internal/tailscale/tsnet.go
+// internal/tailscale/tsnet.go
 package tailscale
 
 import (
@@ -61,7 +61,7 @@ func (ts *TSNetServer) Listen(network, addr string) (net.Listener, error) {
 		zap.String("network", network),
 		zap.String("address", addr),
 	)
-	
+
 	ln, err := ts.server.Listen(network, addr)
 	if err != nil {
 		ts.logger.Error("Failed to create TSNet listener",
@@ -101,14 +101,14 @@ func (ts *TSNetServer) Start(ctx context.Context) (string, error) {
 	}
 
 	tailscaleURL := fmt.Sprintf("https://%s", status.Self.DNSName)
-	
+
 	ts.logger.Info("TSNet server started successfully",
 		logging.Component("tsnet_server"),
 		logging.NodeName(ts.config.Hostname),
 		logging.URL(tailscaleURL),
 		zap.String("dns_name", status.Self.DNSName),
 	)
-	
+
 	return tailscaleURL, nil
 }
 
@@ -140,7 +140,7 @@ func (ts *TSNetServer) Serve(ctx context.Context, handler http.Handler) error {
 		logging.Port(80),
 		logging.Status("serving"),
 	)
-	
+
 	// Serve HTTP requests
 	if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 		ts.logger.Error("TSNet HTTP server error",

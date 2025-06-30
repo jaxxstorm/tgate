@@ -2,6 +2,8 @@
 package logging
 
 import (
+	"os"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -80,14 +82,18 @@ func FromZapLevel(level zapcore.Level) Level {
 // SetLogLevel dynamically changes the log level of a logger
 func SetLogLevel(logger *zap.Logger, level Level) *zap.Logger {
 	atomicLevel := zap.NewAtomicLevelAt(level.ToZapLevel())
-	
+
+	// Create a new logger with the updated level, using the same output as the original logger
+	// Extract the existing core's writer syncer if possible, otherwise default to stdout
+	var writeSyncer zapcore.WriteSyncer = zapcore.Lock(os.Stdout)
+
 	// Create a new logger with the updated level
 	newCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()),
-		zapcore.AddSync(zapcore.Lock(zapcore.AddSync(zapcore.NewMultiWriteSyncer()))),
+		writeSyncer,
 		atomicLevel,
 	)
-	
+
 	return zap.New(newCore)
 }
 

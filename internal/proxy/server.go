@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"go.uber.org/zap"
 
+	"github.com/jaxxstorm/tgate/internal/logging"
 	"github.com/jaxxstorm/tgate/internal/model"
 	"github.com/jaxxstorm/tgate/internal/stats"
 )
@@ -71,8 +72,8 @@ type Server struct {
 	mode        model.ServerMode
 	stats       *stats.Tracker
 	requestID   int64
-	webUIURL    string // Store the web UI URL for display
-	maxLogsCap  int    // Maximum number of logs to keep
+	webUIURL    string                   // Store the web UI URL for display
+	maxLogsCap  int                      // Maximum number of logs to keep
 	listeners   []func(model.RequestLog) // Event listeners for new requests
 }
 
@@ -193,14 +194,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reqHeaders[k] = strings.Join(v, ", ")
 	}
 
-	// Log incoming request
-	s.sugarLogger.Infow("Incoming request",
-		"method", r.Method,
-		"url", r.URL.String(),
-		"remote_addr", r.RemoteAddr,
-		"user_agent", r.UserAgent(),
-		"content_length", r.ContentLength,
-		"request_id", requestID,
+	// Log application-level events using the same pattern as other components
+	s.logger.Info("Request received",
+		logging.Component("proxy_server"),
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+		zap.String("remote_addr", r.RemoteAddr),
 	)
 
 	if !s.useTUI {
@@ -248,12 +247,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Store log entry and notify listeners
 	s.captureRequest(logEntry)
 
-	// Log response
-	s.sugarLogger.Infow("Response sent",
-		"status_code", lrw.statusCode,
-		"response_size", lrw.size,
-		"duration", duration,
-		"request_id", requestID,
+	// Log application-level response events with proper structured format
+	s.logger.Info("Request completed",
+		zap.Int("status_code", lrw.statusCode),
+		zap.Duration("duration", duration),
+		zap.Int64("response_size", lrw.size),
 	)
 
 	if !s.useTUI {

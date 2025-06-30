@@ -1,4 +1,4 @@
-//internal/ui/server.go
+// internal/ui/server.go
 package ui
 
 import (
@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	
+
 	"github.com/jaxxstorm/tgate/internal/model"
 )
 
@@ -91,8 +91,8 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	case "/api/health":
 		// Health check endpoint
 		health := map[string]interface{}{
-			"status": "ok",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"status":       "ok",
+			"timestamp":    time.Now().UTC().Format(time.RFC3339),
 			"log_provider": s.logProvider != nil,
 		}
 		if s.logProvider != nil {

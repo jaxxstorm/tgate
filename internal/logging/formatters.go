@@ -28,17 +28,17 @@ func NewRequestLogFormatter(includeBody bool, maxBodySize int) *RequestLogFormat
 // FormatRequest formats an HTTP request for logging
 func (f *RequestLogFormatter) FormatRequest(method, url, remoteAddr, userAgent string, contentLength int64, body string) string {
 	timestamp := time.Now().Format("15:04:05")
-	
+
 	logMsg := fmt.Sprintf("[%s] %s %s from %s", timestamp, method, url, remoteAddr)
-	
+
 	if userAgent != "" {
 		logMsg += fmt.Sprintf(" (UA: %s)", userAgent)
 	}
-	
+
 	if contentLength > 0 {
 		logMsg += fmt.Sprintf(" [%d bytes]", contentLength)
 	}
-	
+
 	if f.includeBody && body != "" {
 		if len(body) > f.maxBodySize {
 			logMsg += fmt.Sprintf("\nBody: %s... [truncated at %d chars]", body[:f.maxBodySize], f.maxBodySize)
@@ -46,7 +46,7 @@ func (f *RequestLogFormatter) FormatRequest(method, url, remoteAddr, userAgent s
 			logMsg += fmt.Sprintf("\nBody: %s", body)
 		}
 	}
-	
+
 	return logMsg
 }
 
@@ -58,7 +58,7 @@ func (f *RequestLogFormatter) FormatResponse(statusCode int, size int64, duratio
 	} else if statusCode >= 300 {
 		statusIcon = "⚠"
 	}
-	
+
 	return fmt.Sprintf("%s %d • %s • %d bytes",
 		statusIcon,
 		statusCode,
@@ -131,9 +131,9 @@ func ColorLevelEncoder(level zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
 	case zapcore.DebugLevel:
 		enc.AppendString("\033[36mDEBUG\033[0m") // Cyan
 	case zapcore.InfoLevel:
-		enc.AppendString("\033[32mINFO\033[0m")  // Green
+		enc.AppendString("\033[32mINFO\033[0m") // Green
 	case zapcore.WarnLevel:
-		enc.AppendString("\033[33mWARN\033[0m")  // Yellow
+		enc.AppendString("\033[33mWARN\033[0m") // Yellow
 	case zapcore.ErrorLevel:
 		enc.AppendString("\033[31mERROR\033[0m") // Red
 	case zapcore.FatalLevel:

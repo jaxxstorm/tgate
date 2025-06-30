@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	
+
 	"github.com/jaxxstorm/tgate/internal/model"
 )
 
@@ -76,16 +76,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Reserve space for titles, borders, and footer
 			reservedHeight := 8 // titles + borders + footer
 			availableHeight := msg.Height - reservedHeight
-			
+
 			// Ensure minimum height
 			if availableHeight < 20 {
 				availableHeight = 20
 			}
-			
+
 			// Split: 70% for top section, 30% for bottom
 			topSectionHeight := (availableHeight * 7) / 10
 			bottomSectionHeight := availableHeight - topSectionHeight
-			
+
 			// Ensure minimums
 			if topSectionHeight < 8 {
 				topSectionHeight = 8
@@ -93,7 +93,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if bottomSectionHeight < 10 {
 				bottomSectionHeight = 10
 			}
-			
+
 			// Each top pane gets half the width minus padding
 			topPaneWidth := (msg.Width - 6) / 2 // Leave room for borders and spacing
 			if topPaneWidth < 30 {
@@ -115,21 +115,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update existing viewports with same logic
 			reservedHeight := 8
 			availableHeight := msg.Height - reservedHeight
-			
+
 			if availableHeight < 20 {
 				availableHeight = 20
 			}
-			
+
 			topSectionHeight := (availableHeight * 7) / 10
 			bottomSectionHeight := availableHeight - topSectionHeight
-			
+
 			if topSectionHeight < 8 {
 				topSectionHeight = 8
 			}
 			if bottomSectionHeight < 10 {
 				bottomSectionHeight = 10
 			}
-			
+
 			topPaneWidth := (msg.Width - 6) / 2
 			if topPaneWidth < 30 {
 				topPaneWidth = 30
@@ -143,7 +143,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appLogs.Height = bottomSectionHeight
 			m.width = msg.Width
 			m.height = msg.Height
-			
+
 			// Refresh content after resize
 			m.updateStatsPane()
 			m.updateHeadersPane()
@@ -308,7 +308,7 @@ func (m *Model) updateHeadersPane() {
 
 	b.WriteString(fmt.Sprintf("From: %s\n",
 		m.lastRequest.RemoteAddr))
-		
+
 	b.WriteString(fmt.Sprintf("Time: %s\n\n",
 		m.lastRequest.Timestamp.Format("15:04:05")))
 
@@ -320,7 +320,7 @@ func (m *Model) updateHeadersPane() {
 		// Priority headers to show first
 		priorityHeaders := []string{"User-Agent", "Content-Type", "Authorization", "Accept", "Host", "Accept-Encoding"}
 		shown := make(map[string]bool)
-		
+
 		// Show priority headers first
 		for _, key := range priorityHeaders {
 			if value, exists := m.lastRequest.Headers[key]; exists {
@@ -330,7 +330,7 @@ func (m *Model) updateHeadersPane() {
 				shown[key] = true
 			}
 		}
-		
+
 		// Show all remaining headers (not just up to 5)
 		var otherHeaders []string
 		for k := range m.lastRequest.Headers {
@@ -339,23 +339,23 @@ func (m *Model) updateHeadersPane() {
 			}
 		}
 		sort.Strings(otherHeaders)
-		
+
 		// Calculate how many more headers we can show based on available space
 		// Rough estimate: we have about (pane_height - current_lines) lines left
-		currentLines := 7 + len(shown) // rough count of lines used so far
+		currentLines := 7 + len(shown)                            // rough count of lines used so far
 		availableLines := m.headersPane.Height - currentLines - 3 // leave some buffer
-		
+
 		maxAdditionalHeaders := availableLines
 		if maxAdditionalHeaders < 0 {
 			maxAdditionalHeaders = 0
 		}
-		
+
 		for i, k := range otherHeaders {
 			if i >= maxAdditionalHeaders {
 				// Show count of remaining headers if we hit the limit
 				remaining := len(otherHeaders) - i
 				if remaining > 0 {
-					b.WriteString(fmt.Sprintf("  %s\n", 
+					b.WriteString(fmt.Sprintf("  %s\n",
 						lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(
 							fmt.Sprintf("... and %d more headers", remaining))))
 				}
@@ -372,17 +372,17 @@ func (m *Model) updateHeadersPane() {
 	if m.lastRequest.Body != "" {
 		b.WriteString(lipgloss.NewStyle().Bold(true).Render("Request Body:"))
 		b.WriteString("\n")
-		
+
 		// Calculate remaining space for body
 		currentLines := strings.Count(b.String(), "\n")
 		availableLines := m.headersPane.Height - currentLines - 2 // leave some buffer
-		
+
 		// Estimate how much body we can show (rough: 80 chars per line)
 		maxBodyChars := availableLines * 80
 		if maxBodyChars < 200 {
 			maxBodyChars = 200 // minimum
 		}
-		
+
 		if len(m.lastRequest.Body) > maxBodyChars {
 			b.WriteString(fmt.Sprintf("[%d bytes - showing first %d chars]\n", len(m.lastRequest.Body), maxBodyChars))
 			bodyPreview := m.lastRequest.Body[:maxBodyChars]

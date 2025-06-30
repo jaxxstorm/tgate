@@ -3,7 +3,7 @@ package logging
 
 import (
 	"time"
-	
+
 	"go.uber.org/zap"
 )
 

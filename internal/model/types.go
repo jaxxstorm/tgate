@@ -94,12 +94,12 @@ func (t TailscaleMode) String() string {
 
 // StatsSnapshot represents a snapshot of statistics
 type StatsSnapshot struct {
-	TotalConnections    int     `json:"total_connections"`
-	OpenConnections     int     `json:"open_connections"`
-	AvgResponseTime1m   float64 `json:"avg_response_time_1m"`
-	AvgResponseTime5m   float64 `json:"avg_response_time_5m"`
-	P50ResponseTime     float64 `json:"p50_response_time"`
-	P90ResponseTime     float64 `json:"p90_response_time"`
+	TotalConnections  int     `json:"total_connections"`
+	OpenConnections   int     `json:"open_connections"`
+	AvgResponseTime1m float64 `json:"avg_response_time_1m"`
+	AvgResponseTime5m float64 `json:"avg_response_time_5m"`
+	P50ResponseTime   float64 `json:"p50_response_time"`
+	P90ResponseTime   float64 `json:"p90_response_time"`
 }
 
 // UIServerInfo holds information about a running UI server

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jaxxstorm/tgate/internal/config"
+	"github.com/jaxxstorm/tgate/internal/httputil"
 	"github.com/jaxxstorm/tgate/internal/model"
 	"github.com/jaxxstorm/tgate/internal/proxy"
 	"github.com/jaxxstorm/tgate/internal/tailscale"
@@ -28,7 +29,7 @@ func SetupLocalTailscaleQuiet(ctx context.Context, tsClient *tailscale.Client, p
 
 	// Start our proxy server
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("localhost:%d", proxyPort),
+		Addr:    fmt.Sprintf(":%d", proxyPort),
 		Handler: proxyServer,
 	}
 
@@ -38,8 +39,11 @@ func SetupLocalTailscaleQuiet(ctx context.Context, tsClient *tailscale.Client, p
 		}
 	}()
 
-	// Give the server a moment to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the server to be ready
+	if err := httputil.WaitForServerReady(ctx, fmt.Sprintf("localhost:%d", proxyPort), 2*time.Second); err != nil {
+		logger.Errorf("Proxy server failed to start port=%d error=%v", proxyPort, err)
+		return nil, nil
+	}
 
 	// Set up UI server if enabled
 	if !cfg.NoUI {
@@ -167,7 +171,7 @@ func SetupUIServerQuiet(ctx context.Context, tsClient *tailscale.Client, uiPort 
 
 	// Start UI server on local port
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("localhost:%d", uiPort),
+		Addr:    fmt.Sprintf(":%d", uiPort),
 		Handler: uiServer,
 	}
 
@@ -177,8 +181,11 @@ func SetupUIServerQuiet(ctx context.Context, tsClient *tailscale.Client, uiPort 
 		}
 	}()
 
-	// Give the server a moment to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the UI server to be ready
+	if err := httputil.WaitForServerReady(ctx, fmt.Sprintf("localhost:%d", uiPort), 2*time.Second); err != nil {
+		logger.Errorf("UI server failed to start local_port=%d error=%v", uiPort, err)
+		return nil, fmt.Errorf("UI server failed to start: %w", err)
+	}
 
 	logger.Infof("UI bound port=%d", uiPort)
 	logger.Infof("UI accessible url=%s", uiURL)

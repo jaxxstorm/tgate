@@ -59,17 +59,17 @@ func GetTraceID(ctx context.Context) string {
 // WithFields adds structured fields to a logger from context
 func WithFields(ctx context.Context, fields ...zap.Field) *zap.Logger {
 	logger := FromContext(ctx)
-	
+
 	// Add request ID if available
 	if requestID := GetRequestID(ctx); requestID != "" {
 		fields = append(fields, zap.String("request_id", requestID))
 	}
-	
+
 	// Add trace ID if available
 	if traceID := GetTraceID(ctx); traceID != "" {
 		fields = append(fields, zap.String("trace_id", traceID))
 	}
-	
+
 	return logger.With(fields...)
 }
 

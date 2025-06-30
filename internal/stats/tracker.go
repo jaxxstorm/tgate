@@ -1,4 +1,4 @@
-//internal/stats/tracker.go
+// internal/stats/tracker.go
 package stats
 
 import (
@@ -151,7 +151,7 @@ type StatsSnapshot struct {
 // Snapshot returns a snapshot of current statistics
 func (t *Tracker) Snapshot() StatsSnapshot {
 	ttl, opn, rt1, rt5, p50, p90 := t.GetStats()
-	
+
 	return StatsSnapshot{
 		TotalConnections:  ttl,
 		OpenConnections:   opn,

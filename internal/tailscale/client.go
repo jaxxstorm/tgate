@@ -588,13 +588,13 @@ func (c *Client) findAvailableTailscalePort(sc *ipn.ServeConfig, startPort uint1
 func FindAvailableLocalPort() (int, error) {
 	// Use a random starting port in the ephemeral port range (49152-65535)
 	startPort := 49152 + rand.IntN(10000) // Random port between 49152 and 59151
-	
+
 	for port := startPort; port < startPort+1000; port++ {
 		if port > 65535 {
 			// Wrap around if we exceed the port range
 			port = 49152 + (port - 65535)
 		}
-		
+
 		ln, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 		if err == nil {
 			ln.Close()

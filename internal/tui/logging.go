@@ -128,20 +128,14 @@ func (l *TUIOnlyLogger) logWithFields(level, msg string, fields ...zap.Field) {
 
 // CreateTUIZapLogger creates a zap logger that sends output to the TUI
 func CreateTUIZapLogger(program *tea.Program) *zap.Logger {
-	// Create a custom writer that sends to TUI
-	tuiWriter := &tuiZapWriter{program: program}
+	// Create a TUIOnlyLogger instance
+	tuiLogger := NewTUIOnlyLogger(program)
+	
+	// Create a custom core that routes directly to TUIOnlyLogger
+	tuiCore := &tuiZapCore{tuiLogger: tuiLogger}
 
-	// Use the standard console encoder config from logging package for consistency
-	encoderConfig := logging.ConsoleEncoderConfig()
-
-	// Create logger with custom writer and consistent encoding
-	logger := zap.New(
-		zapcore.NewCore(
-			zapcore.NewConsoleEncoder(encoderConfig),
-			zapcore.AddSync(tuiWriter),
-			zapcore.InfoLevel,
-		),
-	)
+	// Create logger with custom core
+	logger := zap.New(tuiCore)
 
 	return logger
 }
@@ -188,13 +182,16 @@ func (w *tuiZapWriter) Write(p []byte) (n int, err error) {
 			}
 		}
 	} else {
-		// Handle non-zap formatted logs - these are likely from other sources
+		// Handle non-tab formatted logs - these should be properly formatted
+		// Since our CreateTUIZapLogger uses ConsoleEncoder, all logs should come through
+		// in tab-separated format. If we reach here, something might be wrong with the encoder.
+
 		// Skip very short or empty lines to reduce noise
 		if len(strings.TrimSpace(line)) < 3 {
 			return len(p), nil
 		}
 
-		// Simple level detection
+		// Simple level detection for fallback
 		upperLine := strings.ToUpper(line)
 		if strings.Contains(upperLine, "ERROR") || strings.Contains(upperLine, "FAIL") {
 			level = "ERROR"
@@ -586,6 +583,7 @@ func extractEssentialFields(jsonFields string) string {
 	// Only extract the most essential fields to keep messages concise
 	essentialFields := []string{
 		"component", "port", "proxy_port", "serve_port", "status", "error",
+		"method", "path", "remote_addr", "user_agent", "status_code", "duration", "response_size",
 	}
 
 	for _, fieldName := range essentialFields {
@@ -654,5 +652,57 @@ func (w *simpleTUIZapWriter) Write(p []byte) (n int, err error) {
 }
 
 func (w *simpleTUIZapWriter) Sync() error {
+	return nil
+}
+
+// tuiZapCore implements zapcore.Core for direct TUIOnlyLogger integration
+type tuiZapCore struct {
+	tuiLogger *TUIOnlyLogger
+	level     zapcore.Level
+}
+
+func (c *tuiZapCore) Enabled(level zapcore.Level) bool {
+	return level >= zapcore.InfoLevel // Always show INFO and above
+}
+
+func (c *tuiZapCore) With(fields []zapcore.Field) zapcore.Core {
+	// For simplicity, return the same core
+	return c
+}
+
+func (c *tuiZapCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if c.Enabled(entry.Level) {
+		return checked.AddCore(entry, c)
+	}
+	return checked
+}
+
+func (c *tuiZapCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
+	// Convert zapcore fields to zap fields
+	zapFields := make([]zap.Field, len(fields))
+	for i, field := range fields {
+		zapFields[i] = zap.Field(field)
+	}
+
+	// Route to appropriate TUIOnlyLogger method based on level
+	switch entry.Level {
+	case zapcore.DebugLevel:
+		c.tuiLogger.Debug(entry.Message, zapFields...)
+	case zapcore.InfoLevel:
+		c.tuiLogger.Info(entry.Message, zapFields...)
+	case zapcore.WarnLevel:
+		c.tuiLogger.Warn(entry.Message, zapFields...)
+	case zapcore.ErrorLevel:
+		c.tuiLogger.Error(entry.Message, zapFields...)
+	case zapcore.FatalLevel:
+		c.tuiLogger.Fatal(entry.Message, zapFields...)
+	default:
+		c.tuiLogger.Info(entry.Message, zapFields...)
+	}
+
+	return nil
+}
+
+func (c *tuiZapCore) Sync() error {
 	return nil
 }

@@ -13,10 +13,10 @@ import (
 
 // Config holds logging configuration
 type Config struct {
-	Verbose    bool
-	JSON       bool
-	LogFile    string
-	TUIWriter  io.Writer // Optional TUI writer for log redirection
+	Verbose   bool
+	JSON      bool
+	LogFile   string
+	TUIWriter io.Writer // Optional TUI writer for log redirection
 }
 
 // SetupLogger creates and configures a zap logger based on the provided configuration
