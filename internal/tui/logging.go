@@ -130,7 +130,7 @@ func (l *TUIOnlyLogger) logWithFields(level, msg string, fields ...zap.Field) {
 func CreateTUIZapLogger(program *tea.Program) *zap.Logger {
 	// Create a TUIOnlyLogger instance
 	tuiLogger := NewTUIOnlyLogger(program)
-	
+
 	// Create a custom core that routes directly to TUIOnlyLogger
 	tuiCore := &tuiZapCore{tuiLogger: tuiLogger}
 
