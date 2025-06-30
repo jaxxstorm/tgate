@@ -16,7 +16,7 @@ TGate combines the power of Tailscale's secure networking with an elegant termin
 - 🔧 **Development Workflow** - Perfect for frontend/backend integration, mobile app testing, and API development
 - �️ **Production-Ready** - Reliable networking with automatic cleanup and error recovery
 
-[![asciicast](https://asciinema.org/a/tkCwpf6CbahDsqMT30q7NwoU2.svg)](https://asciinema.org/a/tkCwpf6CbahDsqMT30q7NwoU2)
+[![asciicast](https://asciinema.org/a/kbVHNsESs757fnOtyB7mFcefQ.svg)](https://asciinema.org/a/kbVHNsESs757fnOtyB7mFcefQ)
 
 ## 🚀 Installation
 
