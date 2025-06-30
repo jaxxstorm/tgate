@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>tgate – live traffic</title>
+
+  <!-- 6 kB CSS framework, no build step -->
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@picocss/pico@1.*/css/pico.min.css" />
+
+  <!-- Optional local tweaks -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Alpine.js (9 kB) for reactivity, also no build step -->
+  <script defer
+          src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body x-data="ui()" class="container">
+
+  <hgroup style="margin-top:2rem">
+    <h1>tgate</h1>
+    <h2 x-text="subtitle"></h2>
+  </hgroup>
+
+  <!-- live table --------------------------------------------------------- -->
+  <table role="grid">
+    <thead>
+      <tr>
+        <th>When</th><th>M</th><th>Path</th>
+        <th>Status</th><th>ms</th>
+      </tr>
+    </thead>
+    <tbody>
+      <template x-for="r in requests" :key="r.id">
+        <tr :class="r.status_code>=400 ? 'error' : ''"
+            @click="select(r)">
+          <td x-text="r.timestamp"></td>
+          <td x-text="r.method"></td>
+          <td x-text="r.url"></td>
+          <td x-text="r.status_code"></td>
+          <td x-text="(r.duration/1e6).toFixed(1)"></td>
+        </tr>
+      </template>
+    </tbody>
+  </table>
+
+  <!-- drill-down --------------------------------------------------------- -->
+  <article x-show="selected" style="margin-top:2rem">
+    <h3 x-text="selected.url"></h3>
+    <pre x-text="JSON.stringify(selected, null, 2)"></pre>
+  </article>
+
+  <script src="app.js"></script>
+</body>
+</html>
